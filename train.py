@@ -276,15 +276,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task")
     parser.add_argument("--cuda_idx")
+    parser.add_argument("--start_dim")
+    parser.add_argument("--end_dim")
     args = parser.parse_args()
 
     task = sbibm.get_task(args.task)
     prior = task.get_prior()
     simulator = task.get_simulator()
+    start_dim, end_dim = int(args.start_dim), int(args.end_dim)
 
     proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
     setup_theta, setup_x = generate_data(prior, simulator, 100, return_theta=True) 
-    setup_theta = setup_theta[:,:proj_dim]
+    setup_x = setup_x[:,start_dim:end_dim]
 
     mb_size = 50
     device = f"cuda:0"
@@ -303,14 +306,13 @@ if __name__ == "__main__":
     save_iterate = 1_000
     for j in range(5_001):
         theta, x = generate_data(prior, simulator, mb_size, return_theta=True)
-        theta = theta[:,:proj_dim]
+        x = x[:,start_dim:end_dim]
         optimizer.zero_grad()
         loss = -1 * encoder.log_prob(theta.to(device), x.to(device)).mean()
         loss.backward()
         optimizer.step()
 
         if j % save_iterate == 0:    
-            cached_fn = os.path.join("trained", f"{args.task}.nf")
-            # cached_fn = os.path.join("projected_results", f"{args.task}.nf")
+            cached_fn = os.path.join("trained", f"{args.task}_{args.start_dim}-{args.end_dim}.nf")
             with open(cached_fn, "wb") as f:
                 pickle.dump(encoder, f)
