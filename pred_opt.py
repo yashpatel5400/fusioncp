@@ -113,28 +113,45 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
             scores.append(np.min(c_norms, axis=-1))
         return np.array(scores).T
     
-    def get_mvcp_quantile(J = 10):
+    # define *exact* MVCP quantile in ellipsoid contour space
+    def get_mvcp_contour_quantile(J = 10):
         scores = comp_gpcp_scores(x_cal, c_cal, J)
         if len(generative_models) == 1:
-            return np.quantile(proj_scores[:,0], q = 1 - alpha)
+            return np.quantile(scores[:,0], q = 1 - alpha)
 
+        mean = np.mean(scores, axis=0)
+        cov  = np.cov(scores, rowvar=0)
+        prec = np.linalg.inv(cov)
+
+        mvcp_scores = (np.expand_dims(scores - mean, axis=1) @ prec @ np.expand_dims(scores - mean, axis=-1))
+        return mean, cov, np.quantile(mvcp_scores, q = 1 - alpha)
+        
+    def get_disc_mvcp_quantiles(mean, cov, contour_quantile):
+        prec = np.linalg.inv(cov)
+        sqrt_cov = np.linalg.cholesky(cov)
+        eff_rad  = np.sqrt(contour_quantile)
+        
+        # discretize into supporting hyperplanes
         M = 12 # number of angle discretizations
-        directions, quantiles = [], []
-        for m in range(M):
-            angle = 2 * np.pi * m / M
-            direction = np.array([np.cos(angle), np.sin(angle)])
-            proj_scores = np.dot(scores, direction)
-            quantile = np.quantile(proj_scores, q = 1 - alpha)
+        theta        = np.arange(0, 2 * np.pi, 2 * np.pi / M)
+        zs           = np.array(list(zip(eff_rad * np.cos(theta), eff_rad * np.sin(theta))))
+        mvcp_contour = np.array([sqrt_cov @ z + mean for z in zs])
 
-            directions.append(direction)
-            quantiles.append(quantile)
-        return np.array(directions), np.array(quantiles)
+        def norm_dir(pt):
+            unnorm_dir = (pt - mean) @ (prec + prec.T)
+            return unnorm_dir / np.linalg.norm(unnorm_dir)
+        
+        directions = np.array([norm_dir(mvcp_contour[m]) for m in range(M)])
+        quantiles = np.diag(mvcp_contour @ directions.T)
+        return directions, quantiles
 
-    J = 10
-    directions, conformal_quantile = get_mvcp_quantile(J)
-    c_score = comp_gpcp_scores(x_true, c_true)
-    proj_score = np.array([np.dot(c_score, direction) for direction in directions]).T
-    contained = np.sum(np.all(proj_score < conformal_quantile, axis=1)) / len(c_score)
+    J = 10 # fix J across k in experiments but could vary
+    mean, cov, contour_quantile = get_mvcp_contour_quantile(J)
+    directions, conformal_quantile = get_disc_mvcp_quantiles(mean, cov, contour_quantile)
+    
+    test_scores = comp_gpcp_scores(x_true, c_true, J)
+    proj_score = np.array([np.dot(test_scores, direction) for direction in directions]).T
+    contained = np.sum(np.all(proj_score < conformal_quantile, axis=1)) / len(test_scores)
     print(f"Contained: {contained}")
     exit()
 
