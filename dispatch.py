@@ -11,7 +11,7 @@ batch_script = """#!/bin/bash
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-cpu=8g
-#SBATCH --time=10:00
+#SBATCH --time=05:10:00
 #SBATCH --account=tewaria0
 #SBATCH --partition=standard
 
@@ -30,3 +30,6 @@ for method_name in ["nominal", "score_1", "score_2", "sum", "mvcp"]:
         dispatch_fn = os.path.join(dispatch_scripts_dir, f"dispatch_{method_name}_{trial_idx}.sh")
         with open(dispatch_fn, "w") as f:
             f.write(batch_script.format(trial_idx, method_name))
+        
+        print(f"Dispatched : $ sbatch {dispatch_fn}")
+        os.system(f"sbatch {dispatch_fn}")

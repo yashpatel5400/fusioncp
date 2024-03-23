@@ -100,9 +100,9 @@ def nominal_solve(c_true, p, B):
     model.st(w >= 0)
     model.st(p[i] @ w[i,:] <= B[i] for i in range(len(B)))
     
-    blockPrint()
+    # blockPrint()
     model.solve(grb)
-    enablePrint()
+    # enablePrint()
     
     w_star = w.get()
     optima = np.sum(-(c * w_star), axis=-1)
@@ -241,9 +241,9 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
         model.st(w_d >= 0)
 
         model.st(p[i] @ w_d[i * p.shape[-1]:(i+1) * p.shape[-1]] <= B[i] for i in range(len(B)))
-        blockPrint()
+        # blockPrint()
         model.solve(grb)
-        enablePrint()
+        # enablePrint()
 
         w = w_d.get()
         w = w.reshape(c_true.shape)
