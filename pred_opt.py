@@ -20,6 +20,12 @@ import pickle
 import sys, os
 import multiprocessing
 
+import random
+
+torch.manual_seed(0)
+random.seed(0)
+np.random.seed(0)
+
 # Disable
 def blockPrint():
     sys.stdout = open(os.devnull, 'w')
@@ -175,7 +181,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     Js = cartesian_product(*([np.array(list(range(J)))] * K))
     
     eta = 5e-3 # learning rate
-    T = 2#_000 # optimization steps
+    T = 2_000 # optimization steps
 
     pool = multiprocessing.Pool(J)
 
@@ -218,21 +224,13 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     return contained, np.max(opt_value)
 
 
-def main(args):
-    task_name = args.task
-    task = sbibm.get_task(task_name)
-    prior = task.get_prior_dist()
-    simulator = task.get_simulator()
+def run_mvcp(exp_config, task_name, trial_idx):
+    x_train, x_cal, x_test = exp_config["x_train"], exp_config["x_cal"], exp_config["x_test"]
+    c_train, c_cal, c_test = exp_config["c_train"], exp_config["c_cal"], exp_config["c_test"]
+    ps = exp_config["ps"]
+    Bs = exp_config["Bs"]
 
-    n_trials   = 10
-    trial_size = 1
-    N_test = n_trials * trial_size
-
-    (x_train, x_cal, x_test), (c_train, c_cal, c_test) = get_data(prior, simulator, N_test=N_test)
-    c_dataset = torch.vstack([c_train, c_cal]).detach().cpu().numpy() # for cases where only marginal draws are used, no splitting occurs
-    
     cached_dir = "trained"
-
     trained_model_names = os.listdir(cached_dir)
     model_names = [trained_model_name for trained_model_name in trained_model_names if trained_model_name.startswith(task_name)]
     view_dims = [[int(dim) for dim in model_name.split("_")[-1].split(".")[0].split("-")] for model_name in model_names]
@@ -252,56 +250,68 @@ def main(args):
     name_to_method = {
         "MVCP": mvcp,
     }
-    method_coverages = {r"$\alpha$": alphas}
-    method_values = {r"$\alpha$": alphas}
-    method_std = {r"$\alpha$": alphas}
-
-    # want these to be consistent for comparison between methods, so generate once beforehand
-    ps = np.random.randint(low=0, high=1000, size=(N_test, c_dataset.shape[-1]))
-    us = np.random.uniform(low=0, high=1, size=N_test)
-    Bs = np.random.uniform(np.max(ps, axis=1), np.sum(ps, axis=1) - us * np.max(ps, axis=1))
     
     for method_name in name_to_method:
         print(f"Running: {method_name}")
         for alpha in alphas:
             covered = 0
-            values = []
-            trial_runs = {}
-            
-            for trial_idx in range(n_trials):
-                x = x_test[trial_idx * trial_size:(trial_idx + 1) * trial_size]
-                c = c_test[trial_idx * trial_size:(trial_idx + 1) * trial_size]
-                p =     ps[trial_idx * trial_size:(trial_idx + 1) * trial_size]
-                B =     Bs[trial_idx * trial_size:(trial_idx + 1) * trial_size]
+            x = x_test[trial_idx:(trial_idx + 1)]
+            c = c_test[trial_idx:(trial_idx + 1)]
+            p =     ps[trial_idx:(trial_idx + 1)]
+            B =     Bs[trial_idx:(trial_idx + 1)]
                 
-                (covered_trial, value_trials) = name_to_method[method_name](
-                    generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
-                )
-                covered += covered_trial
-                values += list(value_trials)
-                trial_df = pd.DataFrame(values)
-                trial_df.to_csv(os.path.join(result_dir, f"{method_name}.csv"), mode="a")
+            (covered_trial, value_trial) = name_to_method[method_name](
+                generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
+            )
+            covered += covered_trial
+            trial_df = pd.DataFrame([value_trial])
+            trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), mode="a", index=False, header=False)
 
-            if method_name not in method_coverages:
-                method_coverages[method_name] = []
-                method_values[method_name] = []
-                method_std[method_name] = []
 
-            method_coverages[method_name].append(covered / n_trials)
-            method_values[method_name].append(np.mean(values))
-            method_std[method_name].append(np.std(values))
+def generate_data(cached_fn, task_name):
+    task = sbibm.get_task(task_name)
+    prior = task.get_prior_dist()
+    simulator = task.get_simulator()
 
-    coverage_df = pd.DataFrame(method_coverages)
-    values_df = pd.DataFrame(method_values)
-    std_df = pd.DataFrame(method_std)
+    n_trials   = 10
+    trial_size = 1
+    N_test = n_trials * trial_size
 
-    coverage_df.to_csv(os.path.join(result_dir, "coverage.csv"))
-    values_df.to_csv(os.path.join(result_dir, "values.csv"))
-    std_df.to_csv(os.path.join(result_dir, "std.csv"))
+    (x_train, x_cal, x_test), (c_train, c_cal, c_test) = get_data(prior, simulator, N_test=N_test)
+    c_dataset = torch.vstack([c_train, c_cal]).detach().cpu().numpy() # for cases where only marginal draws are used, no splitting occurs
+    
+    # want these to be consistent for comparison between methods, so generate once beforehand
+    ps = np.random.randint(low=0, high=1000, size=(N_test, c_dataset.shape[-1]))
+    us = np.random.uniform(low=0, high=1, size=N_test)
+    Bs = np.random.uniform(np.max(ps, axis=1), np.sum(ps, axis=1) - us * np.max(ps, axis=1))
+
+    with open(cached_fn, "wb") as f:
+        pickle.dump({
+            "x_train" : x_train, 
+            "x_cal"   : x_cal, 
+            "x_test"  : x_test, 
+            "c_train" : c_train, 
+            "c_cal"   : c_cal,
+            "c_test"  : c_test, 
+            "ps"      : ps, 
+            "Bs"      : Bs,
+        }, f)
+
+
+def main(args):
+    data_cache = "exp_configs"
+    cached_fn  = os.path.join(data_cache, args.task)
+    if not os.path.exists(cached_fn):
+        generate_data(cached_fn, args.task)
+    with open(cached_fn, "rb") as f:
+        exp_config = pickle.load(f)
+    run_mvcp(exp_config, args.task, int(args.trial))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task")
+    parser.add_argument("--trial")
     args = parser.parse_args()
     main(args)
     
