@@ -175,7 +175,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     Js = cartesian_product(*([np.array(list(range(J)))] * K))
     
     eta = 5e-3 # learning rate
-    T = 2_000 # optimization steps
+    T = 2#_000 # optimization steps
 
     pool = multiprocessing.Pool(J)
 
@@ -250,7 +250,6 @@ def main(args):
     
     alphas = [0.05]
     name_to_method = {
-        # "CPO": mvcp,
         "MVCP": mvcp,
     }
     method_coverages = {r"$\alpha$": alphas}
@@ -275,15 +274,13 @@ def main(args):
                 p =     ps[trial_idx * trial_size:(trial_idx + 1) * trial_size]
                 B =     Bs[trial_idx * trial_size:(trial_idx + 1) * trial_size]
                 
-                if method_name != "MVCP":
-                    generative_models = generative_models[0] # only leverage multiple generative models if multiview data
                 (covered_trial, value_trials) = name_to_method[method_name](
                     generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
                 )
                 covered += covered_trial
                 values += list(value_trials)
                 trial_df = pd.DataFrame(values)
-                trial_df.to_csv(os.path.join(result_dir, f"{method_name}.csv"))
+                trial_df.to_csv(os.path.join(result_dir, f"{method_name}.csv"), mode="a")
 
             if method_name not in method_coverages:
                 method_coverages[method_name] = []
