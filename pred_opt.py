@@ -89,6 +89,26 @@ def get_data(prior, simulator, N_test):
     return (x_train, x_cal, x_test), (c_train, c_cal, c_test)
 
 
+def nominal_solve(c_true, p, B):
+    model = ro.Model()
+
+    w = model.dvar(c_true.shape)
+    c = c_true.detach().cpu().numpy()
+    
+    model.min(-(c * w).sum())
+    model.st(w <= 1)
+    model.st(w >= 0)
+    model.st(p[i] @ w[i,:] <= B[i] for i in range(len(B)))
+    
+    blockPrint()
+    model.solve(grb)
+    enablePrint()
+    
+    w_star = w.get()
+    optima = np.sum(-(c * w_star), axis=-1)
+    return 1, optima
+
+
 # current f = -w^T c --> grad_w(f) = -c
 def grad_f(w, c):
     return -c
@@ -248,6 +268,7 @@ def run_mvcp(exp_config, task_name, trial_idx):
     
     alphas = [0.05]
     name_to_method = {
+        "nominal": nominal_solve,
         "MVCP": mvcp,
     }
     
@@ -260,9 +281,12 @@ def run_mvcp(exp_config, task_name, trial_idx):
             p =     ps[trial_idx:(trial_idx + 1)]
             B =     Bs[trial_idx:(trial_idx + 1)]
                 
-            (covered_trial, value_trial) = name_to_method[method_name](
-                generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
-            )
+            if method_name == "nominal":
+                (covered_trial, value_trial) = nominal_solve(c, p, B)
+            else:
+                (covered_trial, value_trial) = name_to_method[method_name](
+                    generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
+                )
             covered += covered_trial
             trial_df = pd.DataFrame([value_trial])
             trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), mode="a", index=False, header=False)
@@ -300,6 +324,7 @@ def generate_data(cached_fn, task_name):
 
 def main(args):
     data_cache = "exp_configs"
+    os.makedirs(data_cache, exist_ok=True)
     cached_fn  = os.path.join(data_cache, args.task)
     if not os.path.exists(cached_fn):
         generate_data(cached_fn, args.task)
