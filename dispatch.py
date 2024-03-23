@@ -1,26 +1,32 @@
 # VERY hacky script but hey, gets the job done
-import libtmux
+import os
+
+batch_script = """#!/bin/bash
+# The interpreter used to execute the script
+
+#“#SBATCH” directives that convey submission options:
+
+#SBATCH --job-name=mvcp
+#SBATCH --mail-type=BEGIN,END
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --mem-per-cpu=8g
+#SBATCH --time=10:00
+#SBATCH --account=tewaria0
+#SBATCH --partition=standard
+
+# The application(s) to execute along with its input arguments and options:
+LD_PRELOAD=/home/yppatel/anaconda3/envs/chig/lib/libstdc++.so.6 python /home/yppatel/fusioncp/pred_opt.py --task two_moons --trial {} --fusion {}
+"""
 
 task_names = [
-    # "bernoulli_glm",
-    # "gaussian_linear_uniform",
-    # "gaussian_linear",
-    # "gaussian_mixture",
-    # "lotka_volterra",
-    # "sir",
-    # "slcp_distractors",
-    # "slcp",
     "two_moons",
 ]
 
-server = libtmux.Server()
-
-cuda_gpus = [3,4,5,6]
-for task_idx, task_name in enumerate(task_names):
-    server.new_session(attach=False)
-    session = server.sessions[-1]
-    p = session.attached_pane
-    p.send_keys("conda activate chig", enter=True)
-    cmd = f"CUDA_VISIBLE_DEVICES={cuda_gpus[task_idx % len(cuda_gpus)]} python pred_opt.py --task {task_name}"
-    p.send_keys(cmd, enter=True)
-    print(f"Launched: {cmd}")
+dispatch_scripts_dir = "dispatch_jobs"
+total_trials = 10
+for method_name in ["nominal", "score_1", "score_2", "sum", "mvcp"]:
+    for trial_idx in range(total_trials):
+        dispatch_fn = os.path.join(dispatch_scripts_dir, f"dispatch_{method_name}_{trial_idx}.sh")
+        with open(dispatch_fn, "w") as f:
+            f.write(batch_script.format(trial_idx, method_name))

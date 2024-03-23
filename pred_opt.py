@@ -253,13 +253,13 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     return contained, np.max(opt_value)
 
 
-def run_mvcp(exp_config, task_name, trial_idx):
+def run_mvcp(exp_config, task_name, trial_idx, method_name):
     x_train, x_cal, x_test = exp_config["x_train"], exp_config["x_cal"], exp_config["x_test"]
     c_train, c_cal, c_test = exp_config["c_train"], exp_config["c_cal"], exp_config["c_test"]
     ps = exp_config["ps"]
     Bs = exp_config["Bs"]
 
-    cached_dir = "trained"
+    cached_dir = "trained_cpu"
     trained_model_names = os.listdir(cached_dir)
     model_names = [trained_model_name for trained_model_name in trained_model_names if trained_model_name.startswith(task_name)]
     view_dims = [[int(dim) for dim in model_name.split("_")[-1].split(".")[0].split("-")] for model_name in model_names]
@@ -275,7 +275,7 @@ def run_mvcp(exp_config, task_name, trial_idx):
     result_dir = os.path.join("results", task_name)
     os.makedirs(result_dir, exist_ok=True)
     
-    alphas = [0.05]
+    alpha = 0.05
     fusion_method_to_func = {
         "nominal": nominal_solve,
         "score_1": mvcp,
@@ -284,24 +284,22 @@ def run_mvcp(exp_config, task_name, trial_idx):
         "mvcp": mvcp,
     }
     
-    for method_name in fusion_method_to_func:
-        print(f"Running: {method_name}")
-        for alpha in alphas:
-            covered = 0
-            x = x_test[trial_idx:(trial_idx + 1)]
-            c = c_test[trial_idx:(trial_idx + 1)]
-            p =     ps[trial_idx:(trial_idx + 1)]
-            B =     Bs[trial_idx:(trial_idx + 1)]
-                
-            if method_name == "nominal":
-                (covered_trial, value_trial) = nominal_solve(c, p, B)
-            else:
-                (covered_trial, value_trial) = fusion_method_to_func[method_name](
-                    generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
-                )
-            covered += covered_trial
-            trial_df = pd.DataFrame([value_trial])
-            trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
+    print(f"Running: {method_name}")
+    covered = 0
+    x = x_test[trial_idx:(trial_idx + 1)]
+    c = c_test[trial_idx:(trial_idx + 1)]
+    p =     ps[trial_idx:(trial_idx + 1)]
+    B =     Bs[trial_idx:(trial_idx + 1)]
+        
+    if method_name == "nominal":
+        (covered_trial, value_trial) = nominal_solve(c, p, B)
+    else:
+        (covered_trial, value_trial) = fusion_method_to_func[method_name](
+            generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
+        )
+    covered += covered_trial
+    trial_df = pd.DataFrame([value_trial])
+    trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
 
 
 def generate_data(cached_fn, task_name):
@@ -342,13 +340,13 @@ def main(args):
         generate_data(cached_fn, args.task)
     with open(cached_fn, "rb") as f:
         exp_config = pickle.load(f)
-    run_mvcp(exp_config, args.task, int(args.trial))
+    run_mvcp(exp_config, args.task, int(args.trial), args.fusion)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--task")
     parser.add_argument("--trial")
+    parser.add_argument("--fusion")
     args = parser.parse_args()
     main(args)
-    
