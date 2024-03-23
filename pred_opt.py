@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import sbibm
 import argparse
+import cvxpy as cp
 
 import os
 import pickle
@@ -88,83 +89,91 @@ def grad_f(w, c):
 
 
 def inner_opt(args):
-    w, c_shape, conformal_quantile, c_region_center = args
-    model = ro.Model()
-    c = model.dvar(c_shape)
-
-    model.max(-(c * w).sum())
-    model.st(rso.norm(c[i] - c_region_center[i], 2) <= conformal_quantile for i in range(c_shape[0]))
-    blockPrint()
-    model.solve(grb)
-    enablePrint()
-
-    return c.get()#, model.get()
+    w, c_shape, directions, conformal_quantiles, c_region_centers = args
+    N, K, _ = np.shape(c_region_centers) # c_region_centers now corresponds to a single vec(j), so in batch_size x K x c_dim
+    M       = len(directions)
+    
+    # Construct the problem.
+    c = cp.Variable(c_shape)
+    objective = cp.Maximize(-cp.sum(cp.multiply(c, w)))
+    constraints = []
+    
+    for i in range(N): # iterates over batch size to optimize in parallel
+        for m in range(M): # number of constraints is discretizations used for ellipse
+            # TODO: manually adding constraints this way bakes in 2-view form: can generalize, but fine for now
+            constraints.append(
+                cp.norm(c[i] - c_region_centers[i][0], 2) * directions[m][0] + 
+                cp.norm(c[i] - c_region_centers[i][1], 2) * directions[m][1] <= conformal_quantiles[m])
+    
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+    return c.value
 
 
 # generative model-based prediction regions
 def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B):
     def comp_gpcp_scores(x, c, J = 10):
-        scores = []
+        scores, samples = [], []
         for generative_model, view_dim in zip(generative_models, view_dims):
             c_hat = generative_model.sample(J, x[:,view_dim[0]:view_dim[1]]).detach().cpu().numpy()
             c_tiled = np.transpose(np.tile(c.detach().cpu().numpy(), (J, 1, 1)), (1, 0, 2))
             c_diff = c_hat - c_tiled
             c_norms = np.linalg.norm(c_diff, axis=-1)
             scores.append(np.min(c_norms, axis=-1))
-        return np.array(scores).T
+            samples.append(c_hat)
+            print(c_hat.shape)
+        return np.array(scores).T, np.transpose(np.array(samples), (1, 0, 2, 3))
     
-    # define *exact* MVCP quantile in ellipsoid contour space
-    def get_mvcp_contour_quantile(J = 10):
-        scores = comp_gpcp_scores(x_cal, c_cal, J)
+    def get_mvcp_quantile(J = 10):
+        scores, _ = comp_gpcp_scores(x_cal, c_cal, J)
         if len(generative_models) == 1:
-            return np.quantile(scores[:,0], q = 1 - alpha)
+            return np.quantile(proj_scores[:,0], q = 1 - alpha)
 
-        mean = np.mean(scores, axis=0)
-        cov  = np.cov(scores, rowvar=0)
-        prec = np.linalg.inv(cov)
+        beta_int = [0, 2 * alpha]
+        coverage = -1
+        tolerance = 0.01
 
-        mvcp_scores = (np.expand_dims(scores - mean, axis=1) @ prec @ np.expand_dims(scores - mean, axis=-1))
-        return mean, cov, np.quantile(mvcp_scores, q = 1 - alpha)
-        
-    def get_disc_mvcp_quantiles(mean, cov, contour_quantile):
-        prec = np.linalg.inv(cov)
-        sqrt_cov = np.linalg.cholesky(cov)
-        eff_rad  = np.sqrt(contour_quantile)
-        
-        # discretize into supporting hyperplanes
-        M = 12 # number of angle discretizations
-        theta        = np.arange(0, 2 * np.pi, 2 * np.pi / M)
-        zs           = np.array(list(zip(eff_rad * np.cos(theta), eff_rad * np.sin(theta))))
-        mvcp_contour = np.array([sqrt_cov @ z + mean for z in zs])
+        while np.abs(coverage - (1 - alpha)) > tolerance:
+            beta = (beta_int[0] + beta_int[1]) / 2
 
-        def norm_dir(pt):
-            unnorm_dir = (pt - mean) @ (prec + prec.T)
-            return unnorm_dir / np.linalg.norm(unnorm_dir)
-        
-        directions = np.array([norm_dir(mvcp_contour[m]) for m in range(M)])
-        quantiles = np.diag(mvcp_contour @ directions.T)
+            M = 10 # number of angle discretizations
+            directions, quantiles = [], []
+            for m in range(M):
+                angle = (2 * np.pi / 4) * m / M
+                direction   = np.array([np.cos(angle), np.sin(angle)])
+                proj_scores = np.dot(scores, direction)
+                quantile    = np.quantile(proj_scores, q = 1 - beta)
+                directions.append(direction)
+                quantiles.append(quantile)
+            directions, quantiles = np.array(directions), np.array(quantiles)
+
+            proj_cal_scores = np.array([np.dot(scores, direction) for direction in directions]).T
+            coverage = np.sum(np.all(proj_cal_scores < quantiles, axis=1)) / len(proj_cal_scores)
+            if coverage > (1 - alpha):
+                beta_int[0] = beta
+            else:
+                beta_int[1] = beta
         return directions, quantiles
-
-    J = 10 # fix J across k in experiments but could vary
-    mean, cov, contour_quantile = get_mvcp_contour_quantile(J)
-    directions, conformal_quantile = get_disc_mvcp_quantiles(mean, cov, contour_quantile)
     
-    test_scores = comp_gpcp_scores(x_true, c_true, J)
-    proj_score = np.array([np.dot(test_scores, direction) for direction in directions]).T
-    contained = np.sum(np.all(proj_score < conformal_quantile, axis=1)) / len(test_scores)
-    print(f"Contained: {contained}")
-    exit()
+    # https://stackoverflow.com/questions/11144513/cartesian-product-of-x-and-y-array-points-into-single-array-of-2d-points
+    def cartesian_product(*arrays):
+        la = len(arrays)
+        dtype = np.result_type(*arrays)
+        arr = np.empty([len(a) for a in arrays] + [la], dtype=dtype)
+        for i, a in enumerate(np.ix_(*arrays)):
+            arr[...,i] = a
+        return arr.reshape(-1, la)
 
-    # c_region_centers = [generative_models.sample(J, x).detach().cpu().numpy()]
-    # c_tiled = np.transpose(np.tile(c_true.detach().cpu().numpy(), (J, 1, 1)), (1, 0, 2))
-    # c_diff = c_region_centers - c_tiled
-    # c_norm = np.linalg.norm(c_diff, axis=-1)
-    # c_score = np.min(c_norm, axis=-1)
+    J = 10
+    directions, quantiles = get_mvcp_quantile(J)
+    c_score, c_region_centers = comp_gpcp_scores(x_true, c_true)
+    proj_score = np.array([np.dot(c_score, direction) for direction in directions]).T
+    contained = np.sum(np.all(proj_score < quantiles, axis=1)) / len(c_score)
+    print(f"Contained: {contained}")
+
+    N, K, J, d = c_region_centers.shape
+    Js = cartesian_product(*([np.array(list(range(J)))] * K))
     
-    contained = np.sum(c_score < conformal_quantile) / len(c_score)
-    print(f"Contained: {contained}")
-    # c_region_centers = c_region_centers[0]
-
     eta = 5e-3 # learning rate
     T = 2_000 # optimization steps
 
@@ -174,13 +183,11 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     
     # start optimization loop
     for t in range(T):
-        maxizer_per_region = np.array(list(zip(*pool.map(
-                                                inner_opt,
-                                                [(w, c_true.shape, conformal_quantile, c_region_centers[:,j]) for j in range(J)]
-                                                )
-                                            ))) # batch_size x J x c_dim
-        w_tiled = np.transpose(np.tile(w, (J, 1, 1)), (1, 0, 2))
-
+        # c_region_centers is batch_size x K x J x c_dim
+        raw_maxes = list(pool.map(inner_opt, [(w, c_true.shape, directions, quantiles, c_region_centers[:,np.arange(2),j,:]) for j in Js]))
+        maxizer_per_region = np.transpose(np.array([maximizer for maximizer in raw_maxes if maximizer is not None]), (1, 0, 2))
+        w_tiled = np.transpose(np.tile(w, (maxizer_per_region.shape[1], 1, 1)), (1, 0, 2))
+        
         opt_value_per_region = np.sum(-(maxizer_per_region * w_tiled), axis=-1)
         opt_value = np.max(opt_value_per_region, axis=-1)        
         c_star_idx = np.argmax(opt_value_per_region, axis=-1)        
@@ -218,7 +225,7 @@ def main(args):
     simulator = task.get_simulator()
 
     n_trials   = 10
-    trial_size = 100
+    trial_size = 1
     N_test = n_trials * trial_size
 
     (x_train, x_cal, x_test), (c_train, c_cal, c_test) = get_data(prior, simulator, N_test=N_test)
