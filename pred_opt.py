@@ -137,7 +137,7 @@ def inner_opt(args):
 
 
 # generative model-based prediction regions
-def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B):
+def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B, fusion_technique):
     def comp_gpcp_scores(x, c, J = 10):
         scores, samples = [], []
         for generative_model, view_dim in zip(generative_models, view_dims):
@@ -147,10 +147,10 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
             c_norms = np.linalg.norm(c_diff, axis=-1)
             scores.append(np.min(c_norms, axis=-1))
             samples.append(c_hat)
-            print(c_hat.shape)
         return np.array(scores).T, np.transpose(np.array(samples), (1, 0, 2, 3))
     
-    def get_mvcp_quantile(J = 10):
+    # if directions are not specified, we sample M (fixed to 10 below) uniform angles from [0, 2*pi) 
+    def get_mvcp_quantile(directions=None, J = 10):
         scores, _ = comp_gpcp_scores(x_cal, c_cal, J)
         if len(generative_models) == 1:
             return np.quantile(proj_scores[:,0], q = 1 - alpha)
@@ -162,14 +162,18 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
         while np.abs(coverage - (1 - alpha)) > tolerance:
             beta = (beta_int[0] + beta_int[1]) / 2
 
-            M = 10 # number of angle discretizations
-            directions, quantiles = [], []
-            for m in range(M):
-                angle = (2 * np.pi / 4) * m / M
-                direction   = np.array([np.cos(angle), np.sin(angle)])
+            if directions is None:
+                directions = []
+                M = 10 # number of angle discretizations
+                for m in range(M):
+                    angle = (2 * np.pi / 4) * m / M
+                    direction   = np.array([np.cos(angle), np.sin(angle)])
+                    directions.append(direction)
+
+            quantiles = []    
+            for direction in directions:
                 proj_scores = np.dot(scores, direction)
                 quantile    = np.quantile(proj_scores, q = 1 - beta)
-                directions.append(direction)
                 quantiles.append(quantile)
             directions, quantiles = np.array(directions), np.array(quantiles)
 
@@ -190,8 +194,13 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
             arr[...,i] = a
         return arr.reshape(-1, la)
 
+    if fusion_technique   == "score_1": directions = [[1,0]]
+    elif fusion_technique == "score_2": directions = [[0,1]]
+    elif fusion_technique == "sum":     directions = [[np.cos(np.pi / 4), np.sin(np.pi / 4)]]
+    elif fusion_technique == "mvcp":    directions = None
+
     J = 10
-    directions, quantiles = get_mvcp_quantile(J)
+    directions, quantiles = get_mvcp_quantile(directions, J)
     c_score, c_region_centers = comp_gpcp_scores(x_true, c_true)
     proj_score = np.array([np.dot(c_score, direction) for direction in directions]).T
     contained = np.sum(np.all(proj_score < quantiles, axis=1)) / len(c_score)
@@ -267,12 +276,15 @@ def run_mvcp(exp_config, task_name, trial_idx):
     os.makedirs(result_dir, exist_ok=True)
     
     alphas = [0.05]
-    name_to_method = {
+    fusion_method_to_func = {
         "nominal": nominal_solve,
-        "MVCP": mvcp,
+        "score_1": mvcp,
+        "score_2": mvcp,
+        "sum": mvcp,
+        "mvcp": mvcp,
     }
     
-    for method_name in name_to_method:
+    for method_name in fusion_method_to_func:
         print(f"Running: {method_name}")
         for alpha in alphas:
             covered = 0
@@ -284,12 +296,12 @@ def run_mvcp(exp_config, task_name, trial_idx):
             if method_name == "nominal":
                 (covered_trial, value_trial) = nominal_solve(c, p, B)
             else:
-                (covered_trial, value_trial) = name_to_method[method_name](
-                    generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B
+                (covered_trial, value_trial) = fusion_method_to_func[method_name](
+                    generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
                 )
             covered += covered_trial
             trial_df = pd.DataFrame([value_trial])
-            trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), mode="a", index=False, header=False)
+            trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
 
 
 def generate_data(cached_fn, task_name):
