@@ -210,7 +210,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     Js = cartesian_product(*([np.array(list(range(J)))] * K))
     
     eta = 5e-3 # learning rate
-    T = 2_000 # optimization steps
+    T = 500 # optimization steps
 
     pool = multiprocessing.Pool(J)
 
@@ -253,7 +253,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     return contained, np.max(opt_value)
 
 
-def run_mvcp(exp_config, task_name, trial_idx, method_name):
+def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
     x_train, x_cal, x_test = exp_config["x_train"], exp_config["x_cal"], exp_config["x_test"]
     c_train, c_cal, c_test = exp_config["c_train"], exp_config["c_cal"], exp_config["c_test"]
     ps = exp_config["ps"]
@@ -286,20 +286,23 @@ def run_mvcp(exp_config, task_name, trial_idx, method_name):
     
     print(f"Running: {method_name}")
     covered = 0
-    x = x_test[trial_idx:(trial_idx + 1)]
-    c = c_test[trial_idx:(trial_idx + 1)]
-    p =     ps[trial_idx:(trial_idx + 1)]
-    B =     Bs[trial_idx:(trial_idx + 1)]
-        
-    if method_name == "nominal":
-        (covered_trial, value_trial) = nominal_solve(c, p, B)
-    else:
-        (covered_trial, value_trial) = fusion_method_to_func[method_name](
-            generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
-        )
-    covered += covered_trial
-    trial_df = pd.DataFrame([value_trial])
-    trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
+
+    start_trial_idx = trial_size * trial_idx
+    for trial_idx in range(start_trial_idx, start_trial_idx + trial_size):
+        x = x_test[trial_idx:(trial_idx + 1)]
+        c = c_test[trial_idx:(trial_idx + 1)]
+        p =     ps[trial_idx:(trial_idx + 1)]
+        B =     Bs[trial_idx:(trial_idx + 1)]
+            
+        if method_name == "nominal":
+            (covered_trial, value_trial) = nominal_solve(c, p, B)
+        else:
+            (covered_trial, value_trial) = fusion_method_to_func[method_name](
+                generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
+            )
+        covered += covered_trial
+        trial_df = pd.DataFrame([value_trial])
+        trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
 
 
 def generate_data(cached_fn, task_name):
@@ -307,7 +310,7 @@ def generate_data(cached_fn, task_name):
     prior = task.get_prior_dist()
     simulator = task.get_simulator()
 
-    n_trials   = 10
+    n_trials   = 100
     trial_size = 1
     N_test = n_trials * trial_size
 
@@ -340,7 +343,7 @@ def main(args):
         generate_data(cached_fn, args.task)
     with open(cached_fn, "rb") as f:
         exp_config = pickle.load(f)
-    run_mvcp(exp_config, args.task, int(args.trial), args.fusion)
+    run_mvcp(exp_config, args.task, int(args.trial), 10, args.fusion)
 
 
 if __name__ == "__main__":
