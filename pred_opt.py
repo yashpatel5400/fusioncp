@@ -67,25 +67,30 @@ plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
 
 device = ("cuda" if torch.cuda.is_available() else "cpu")
 
-def get_data(prior, simulator, N_test):
-    # used for setting up dimensions
-    sample_c = prior.sample((1,))
-    sample_x = simulator(sample_c)
+def sample(priors, simulators, N):
+    thetas, xs, view_dims = [], [], []
+    for prior, simulator in zip(priors, simulators):
+        theta = prior(num_samples=N)
+        x = simulator(theta)
 
+        thetas.append(theta)
+        xs.append(x)
+        view_dims.append(x.shape[-1])
+    theta, x = torch.hstack(thetas), torch.hstack(xs)
+    return theta, x
+
+def get_data(priors, simulators, N_test):
     N = 2_000
     N_train = 1000
 
-    c_dataset = prior.sample((N,))
-    x_dataset = simulator(c_dataset)
+    c_dataset, x_dataset = sample(priors, simulators, N)
 
     to_tensor = lambda r : torch.tensor(r).to(torch.float32).to(device)
     x_train, x_cal = to_tensor(x_dataset[:N_train]), to_tensor(x_dataset[N_train:])
     c_train, c_cal = to_tensor(c_dataset[:N_train]), to_tensor(c_dataset[N_train:])
 
-    c_test = prior.sample((N_test,))
-    x_test = simulator(c_test)
+    c_test, x_test = sample(priors, simulators, N_test)
     x_test, c_test = to_tensor(x_test), to_tensor(c_test)
-
     return (x_train, x_cal, x_test), (c_train, c_cal, c_test)
 
 
@@ -309,16 +314,17 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
         trial_df.to_csv(os.path.join(result_dir, f"{method_name}_{trial_idx}.csv"), index=False, header=False)
 
 
-def generate_data(cached_fn, task_name):
-    task = sbibm.get_task(task_name)
-    prior = task.get_prior_dist()
-    simulator = task.get_simulator()
+def generate_data(cached_fn, task_names):
+    task_names = task_names.split(",")
+    tasks      = [sbibm.get_task(task_name) for task_name in task_names]
+    priors     = [task.get_prior() for task in tasks]
+    simulators = [task.get_simulator() for task in tasks]
 
     n_trials   = 100
     trial_size = 1
     N_test = n_trials * trial_size
 
-    (x_train, x_cal, x_test), (c_train, c_cal, c_test) = get_data(prior, simulator, N_test=N_test)
+    (x_train, x_cal, x_test), (c_train, c_cal, c_test) = get_data(priors, simulators, N_test=N_test)
     c_dataset = torch.vstack([c_train, c_cal]).detach().cpu().numpy() # for cases where only marginal draws are used, no splitting occurs
     
     # want these to be consistent for comparison between methods, so generate once beforehand
@@ -343,17 +349,17 @@ def generate_data(cached_fn, task_name):
 def main(args):
     data_cache = "exp_configs"
     os.makedirs(data_cache, exist_ok=True)
-    cached_fn  = os.path.join(data_cache, args.task)
+    cached_fn  = os.path.join(data_cache, args.tasks)
     if not os.path.exists(cached_fn):
-        generate_data(cached_fn, args.task)
+        generate_data(cached_fn, args.tasks)
     with open(cached_fn, "rb") as f:
         exp_config = pickle.load(f)
-    run_mvcp(exp_config, args.task, int(args.trial), 10, args.fusion)
+    run_mvcp(exp_config, args.tasks, int(args.trial), 10, args.fusion)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task")
+    parser.add_argument("--tasks")
     parser.add_argument("--trial")
     parser.add_argument("--fusion")
     args = parser.parse_args()

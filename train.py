@@ -253,12 +253,19 @@ class EmbeddingNet(nn.Module):
         '''
         return self.dense(x)
 
-def generate_data(prior, simulator, n_pts, return_theta=False):
-    theta = prior(num_samples=n_pts)
-    x = simulator(theta)
+def generate_data(priors, simulators, n_pts, return_theta=False):
+    thetas, xs, view_dims = [], [], []
+    for prior, simulator in zip(priors, simulators):
+        theta = prior(num_samples=n_pts)
+        x = simulator(theta)
+
+        thetas.append(theta)
+        xs.append(x)
+        view_dims.append(x.shape[-1])
+    theta, x = torch.hstack(thetas), torch.hstack(xs)
 
     if return_theta: 
-        return theta, x
+        return theta, x, view_dims
     else:
         return x
 
@@ -274,19 +281,21 @@ def ci_len(encoder, q_hat, theta_grid, test_X_grid, test_sims, discretization):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task")
+    parser.add_argument("--tasks")
     parser.add_argument("--cuda_idx")
-    parser.add_argument("--start_dim")
-    parser.add_argument("--end_dim")
+    parser.add_argument("--view_idx")
     args = parser.parse_args()
 
-    task = sbibm.get_task(args.task)
-    prior = task.get_prior()
-    simulator = task.get_simulator()
-    start_dim, end_dim = int(args.start_dim), int(args.end_dim)
+    view_idx   = int(args.view_idx)
+    task_names = args.tasks.split(",")
+    tasks      = [sbibm.get_task(task_name) for task_name in task_names]
+    priors     = [task.get_prior() for task in tasks]
+    simulators = [task.get_simulator() for task in tasks]
+    # start_dim, end_dim = int(args.start_dim), int(args.end_dim)
 
     proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
-    setup_theta, setup_x = generate_data(prior, simulator, 100, return_theta=True) 
+    setup_theta, setup_x, x_dims = generate_data(priors, simulators, 100, return_theta=True) 
+    start_dim, end_dim = int(np.sum(x_dims[:view_idx])), int(np.sum(x_dims[:view_idx+1]))
     setup_x = setup_x[:,start_dim:end_dim]
 
     mb_size = 50
@@ -305,7 +314,8 @@ if __name__ == "__main__":
     
     save_iterate = 1_000
     for j in range(5_001):
-        theta, x = generate_data(prior, simulator, mb_size, return_theta=True)
+        print(f"Training step: {j}")
+        theta, x, _ = generate_data(priors, simulators, mb_size, return_theta=True)
         x = x[:,start_dim:end_dim]
         optimizer.zero_grad()
         loss = -1 * encoder.log_prob(theta.to(device), x.to(device)).mean()
@@ -313,6 +323,6 @@ if __name__ == "__main__":
         optimizer.step()
 
         if j % save_iterate == 0:    
-            cached_fn = os.path.join("trained", f"{args.task}_{args.start_dim}-{args.end_dim}.nf")
+            cached_fn = os.path.join("trained", f"{args.tasks}_{start_dim}-{end_dim}.nf")
             with open(cached_fn, "wb") as f:
                 pickle.dump(encoder, f)
