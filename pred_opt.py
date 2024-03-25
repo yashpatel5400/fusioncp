@@ -196,7 +196,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
 
     if fusion_technique   == "score_1": directions = [[1,0]]
     elif fusion_technique == "score_2": directions = [[0,1]]
-    elif fusion_technique == "sum":     directions = [[np.cos(np.pi / 4), np.sin(np.pi / 4)]]
+    elif fusion_technique == "sum":     directions = [[np.cos((2 * np.pi / 4) * 2 / 10), np.sin((2 * np.pi / 4) * 2 / 10)]]
     elif fusion_technique == "mvcp":    directions = None
 
     J = 10
@@ -293,9 +293,13 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
         c = c_test[trial_idx:(trial_idx + 1)]
         p =     ps[trial_idx:(trial_idx + 1)]
         B =     Bs[trial_idx:(trial_idx + 1)]
-            
+
+        _, nominal_val = nominal_solve(c, p, B)
+        if nominal_val > 0: # only want to consider those problem setups where the solution is non-trivial (i.e. not just w^* = 0)
+            continue
+
         if method_name == "nominal":
-            (covered_trial, value_trial) = nominal_solve(c, p, B)
+            (covered_trial, value_trial) = (1, nominal_val)
         else:
             (covered_trial, value_trial) = fusion_method_to_func[method_name](
                 generative_models, view_dims, alpha, x_cal, c_cal, x, c, p, B, method_name
@@ -333,6 +337,7 @@ def generate_data(cached_fn, task_name):
             "ps"      : ps, 
             "Bs"      : Bs,
         }, f)
+    exit()
 
 
 def main(args):
