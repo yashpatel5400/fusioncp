@@ -268,7 +268,9 @@ def generate_data(priors, simulators, n_pts, return_theta=False, combination_met
     elif combination_method == "sum":
         # thetas[1] /= 10
         theta, x = (thetas[0][:,:2] + thetas[1][:,:2]), torch.hstack(xs)
-
+    elif combination_method == "repeat":
+        theta, x = torch.tile(theta, (1,3)), torch.hstack(xs)
+        
     if return_theta: 
         return theta, x, view_dims
     else:
@@ -289,22 +291,26 @@ if __name__ == "__main__":
     parser.add_argument("--tasks")
     parser.add_argument("--cuda_idx")
     parser.add_argument("--view_idx")
+    parser.add_argument("--start_dim")
+    parser.add_argument("--end_dim")
     args = parser.parse_args()
 
-    view_idx   = int(args.view_idx)
     task_names = args.tasks.split(",")
     tasks      = [sbibm.get_task(task_name) for task_name in task_names]
     priors     = [task.get_prior() for task in tasks]
     simulators = [task.get_simulator() for task in tasks]
-    # start_dim, end_dim = int(args.start_dim), int(args.end_dim)
 
-    combination_method = "sum"
-
+    combination_method = "repeat"
     proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
     setup_theta, setup_x, x_dims = generate_data(priors, simulators, 100, return_theta=True, combination_method=combination_method) 
-    start_dim, end_dim = int(np.sum(x_dims[:view_idx])), int(np.sum(x_dims[:view_idx+1]))
-    setup_x = setup_x[:,start_dim:end_dim]
+    
+    if args.start_dim is not None and args.end_dim is not None:
+        start_dim, end_dim = int(args.start_dim), int(args.end_dim)
+    else:
+        view_idx = int(args.view_idx)
+        start_dim, end_dim = int(np.sum(x_dims[:view_idx])), int(np.sum(x_dims[:view_idx+1]))
 
+    setup_x = setup_x[:,start_dim:end_dim]
     mb_size = 50
     device = f"cuda:0"
 
