@@ -296,8 +296,10 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
     for trial_idx in range(start_trial_idx, start_trial_idx + trial_size):
         x = x_test[trial_idx:(trial_idx + 1)]
         c = c_test[trial_idx:(trial_idx + 1)]
-        p =     ps[trial_idx:(trial_idx + 1)]
-        B =     Bs[trial_idx:(trial_idx + 1)]
+
+        # fix problem specification (p, B here) other than c across trials to reduce unrelatedd variance 
+        p = ps[0:(0 + 1)] # ps[trial_idx:(trial_idx + 1)]
+        B = Bs[0:(0 + 1)] # Bs[trial_idx:(trial_idx + 1)] # 
 
         _, nominal_val = nominal_solve(c, p, B)
         if nominal_val > 0: # only want to consider those problem setups where the solution is non-trivial (i.e. not just w^* = 0)
