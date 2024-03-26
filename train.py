@@ -266,7 +266,8 @@ def generate_data(priors, simulators, n_pts, return_theta=False, combination_met
     if combination_method is None or combination_method == "stack":
         theta, x = torch.hstack(thetas), torch.hstack(xs)
     elif combination_method == "sum":
-        theta, x = (thetas[0] + thetas[1]), torch.hstack(xs)
+        thetas[1] /= 10
+        theta, x = (thetas[0][:,:2] + thetas[1][:,:2]), torch.hstack(xs)
 
     if return_theta: 
         return theta, x, view_dims
