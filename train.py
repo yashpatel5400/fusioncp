@@ -253,7 +253,7 @@ class EmbeddingNet(nn.Module):
         '''
         return self.dense(x)
 
-def generate_data(priors, simulators, n_pts, return_theta=False):
+def generate_data(priors, simulators, n_pts, return_theta=False, combination_method=None):
     thetas, xs, view_dims = [], [], []
     for prior, simulator in zip(priors, simulators):
         theta = prior(num_samples=n_pts)
@@ -262,7 +262,11 @@ def generate_data(priors, simulators, n_pts, return_theta=False):
         thetas.append(theta)
         xs.append(x)
         view_dims.append(x.shape[-1])
-    theta, x = torch.hstack(thetas), torch.hstack(xs)
+
+    if combination_method is None or combination_method == "stack":
+        theta, x = torch.hstack(thetas), torch.hstack(xs)
+    elif combination_method == "sum":
+        theta, x = (thetas[0] + thetas[1]), torch.hstack(xs)
 
     if return_theta: 
         return theta, x, view_dims
@@ -293,8 +297,10 @@ if __name__ == "__main__":
     simulators = [task.get_simulator() for task in tasks]
     # start_dim, end_dim = int(args.start_dim), int(args.end_dim)
 
+    combination_method = "sum"
+
     proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
-    setup_theta, setup_x, x_dims = generate_data(priors, simulators, 100, return_theta=True) 
+    setup_theta, setup_x, x_dims = generate_data(priors, simulators, 100, return_theta=True, combination_method=combination_method) 
     start_dim, end_dim = int(np.sum(x_dims[:view_idx])), int(np.sum(x_dims[:view_idx+1]))
     setup_x = setup_x[:,start_dim:end_dim]
 
@@ -315,7 +321,7 @@ if __name__ == "__main__":
     save_iterate = 1_000
     for j in range(5_001):
         print(f"Training step: {j}")
-        theta, x, _ = generate_data(priors, simulators, mb_size, return_theta=True)
+        theta, x, _ = generate_data(priors, simulators, mb_size, return_theta=True, combination_method=combination_method)
         x = x[:,start_dim:end_dim]
         optimizer.zero_grad()
         loss = -1 * encoder.log_prob(theta.to(device), x.to(device)).mean()
