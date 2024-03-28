@@ -322,7 +322,7 @@ def generate_data(cached_fn, task_names):
     priors     = [task.get_prior() for task in tasks]
     simulators = [task.get_simulator() for task in tasks]
 
-    n_trials   = 100
+    n_trials   = 500
     trial_size = 1
     N_test = n_trials * trial_size
 
