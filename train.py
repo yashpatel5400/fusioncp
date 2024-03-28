@@ -271,6 +271,10 @@ def generate_data(priors, simulators, n_pts, return_theta=False, combination_met
     elif combination_method == "repeat":
         theta, x = torch.tile(theta, (1,1)), torch.hstack(xs)
         
+    proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
+    if proj_dim is not None:
+        theta = theta[:,:proj_dim]
+
     if return_theta: 
         return theta, x, view_dims
     else:
@@ -301,7 +305,6 @@ if __name__ == "__main__":
     simulators = [task.get_simulator() for task in tasks]
 
     combination_method = "repeat"
-    proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
     setup_theta, setup_x, x_dims = generate_data(priors, simulators, 100, return_theta=True, combination_method=combination_method) 
     
     if args.start_dim is not None and args.end_dim is not None:
@@ -325,6 +328,7 @@ if __name__ == "__main__":
     encoder.to(device)
     optimizer = torch.optim.Adam(encoder.parameters(), lr=1e-3)
     
+    fn = f"{args.tasks}_{start_dim}-{end_dim}.nf"
     save_iterate = 1_000
     for j in range(5_001):
         print(f"Training step: {j}")
@@ -336,6 +340,10 @@ if __name__ == "__main__":
         optimizer.step()
 
         if j % save_iterate == 0:    
-            cached_fn = os.path.join("trained", f"{args.tasks}_{start_dim}-{end_dim}.nf")
+            cached_fn = os.path.join("trained", fn)
             with open(cached_fn, "wb") as f:
                 pickle.dump(encoder, f)
+
+    encoder.to("cpu")
+    with open(os.path.join("trained_cpu", fn), "wb") as f:
+        pickle.dump(encoder, f)
