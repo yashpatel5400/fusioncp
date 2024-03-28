@@ -76,7 +76,19 @@ def sample(priors, simulators, N):
         thetas.append(theta)
         xs.append(x)
         view_dims.append(x.shape[-1])
-    theta, x = torch.hstack(thetas), torch.hstack(xs)
+
+    combination_method = "repeat"
+    if combination_method is None or combination_method == "stack":
+        theta, x = torch.hstack(thetas), torch.hstack(xs)
+    elif combination_method == "sum":
+        theta, x = (thetas[0][:,:2] + thetas[1][:,:2]), torch.hstack(xs)
+    elif combination_method == "repeat":
+        theta, x = theta, x # torch.tile(theta, (1,3)), torch.hstack(xs)
+    
+    proj_dim = 2 # to consider a projected, lower-dimensional version of the problem
+    if proj_dim is not None:
+        theta = theta[:,:proj_dim]
+    
     return theta, x
 
 def get_data(priors, simulators, N_test):
@@ -201,7 +213,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
 
     if fusion_technique   == "score_1": directions = [[1,0]]
     elif fusion_technique == "score_2": directions = [[0,1]]
-    elif fusion_technique == "sum":     directions = [[np.cos((2 * np.pi / 4) * 2 / 10), np.sin((2 * np.pi / 4) * 2 / 10)]]
+    elif fusion_technique == "sum":     directions = [[np.cos(np.pi / 4), np.sin(np.pi / 4)]]
     elif fusion_technique == "mvcp":    directions = None
 
     J = 10
@@ -266,7 +278,8 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
 
     cached_dir = "trained_cpu"
     trained_model_names = os.listdir(cached_dir)
-    model_names = [trained_model_name for trained_model_name in trained_model_names if trained_model_name.startswith(task_name)]
+    # model_names = [trained_model_name for trained_model_name in trained_model_names if trained_model_name.startswith(task_name)]
+    model_names = [f"{task_name}_0-1.nf", f"{task_name}_1-2.nf"]
     view_dims = [[int(dim) for dim in model_name.split("_")[-1].split(".")[0].split("-")] for model_name in model_names]
 
     generative_models = []
@@ -302,8 +315,11 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
         B = Bs[0:(0 + 1)] # Bs[trial_idx:(trial_idx + 1)] # 
 
         _, nominal_val = nominal_solve(c, p, B)
-        if nominal_val > 0: # only want to consider those problem setups where the solution is non-trivial (i.e. not just w^* = 0)
+        if nominal_val >= 0: # only want to consider those problem setups where the solution is non-trivial (i.e. not just w^* = 0)
             continue
+        
+        nominal_df = pd.DataFrame([nominal_val])
+        nominal_df.to_csv(os.path.join(result_dir, f"nominal_{trial_idx}.csv"), index=False, header=False)
 
         if method_name == "nominal":
             (covered_trial, value_trial) = (1, nominal_val)
@@ -322,7 +338,7 @@ def generate_data(cached_fn, task_names):
     priors     = [task.get_prior() for task in tasks]
     simulators = [task.get_simulator() for task in tasks]
 
-    n_trials   = 100
+    n_trials   = 500
     trial_size = 1
     N_test = n_trials * trial_size
 
@@ -356,7 +372,7 @@ def main(args):
         generate_data(cached_fn, args.tasks)
     with open(cached_fn, "rb") as f:
         exp_config = pickle.load(f)
-    run_mvcp(exp_config, args.tasks, int(args.trial), 10, args.fusion)
+    run_mvcp(exp_config, args.tasks, int(args.trial), 1, args.fusion)
 
 
 if __name__ == "__main__":
