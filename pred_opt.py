@@ -352,12 +352,12 @@ def generate_data(cached_fn, task_names):
 
     with open(cached_fn, "wb") as f:
         pickle.dump({
-            "x_train" : x_train, 
-            "x_cal"   : x_cal, 
-            "x_test"  : x_test, 
-            "c_train" : c_train, 
-            "c_cal"   : c_cal,
-            "c_test"  : c_test, 
+            "x_train" : x_train.to("cpu"), 
+            "x_cal"   : x_cal.to("cpu"), 
+            "x_test"  : x_test.to("cpu"), 
+            "c_train" : c_train.to("cpu"), 
+            "c_cal"   : c_cal.to("cpu"),
+            "c_test"  : c_test.to("cpu"), 
             "ps"      : ps, 
             "Bs"      : Bs,
         }, f)
