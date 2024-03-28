@@ -13,16 +13,18 @@ def reject_outliers(data, m=2):
     # print(data[abs(data - np.mean(data)) > m * np.std(data)])
     return data[abs(data - np.mean(data)) < m * np.std(data)]
 
+methods = ["nominal", "score_1", "score_2", "sum", "mvcp"]
 results_dir = "/home/yppatel/fusioncp/results"
-for task_name in ["gaussian_linear", "gaussian_linear_uniform", "gaussian_mixture", "two_moons"]:
+task_names = sorted([task_name for task_name in os.listdir(results_dir) 
+                    if os.path.isdir(os.path.join(results_dir, task_name))
+                    and "_old" not in task_name])
+for task_name in task_names:
     trial_inds = []
     for trial_idx in range(total_trials):
         fn = f"/home/yppatel/fusioncp/results/{task_name}/nominal_{trial_idx}.csv"
         if os.path.exists(fn):
             if float(pd.read_csv(fn).columns[0]) < 0:
                 trial_inds.append(trial_idx)
-    
-    methods = ["nominal", "score_1", "score_2", "sum", "mvcp"]
     df = pd.DataFrame(index=np.arange(total_trials), columns=methods)
 
     table_line = ""
@@ -41,24 +43,16 @@ for task_name in ["gaussian_linear", "gaussian_linear_uniform", "gaussian_mixtur
                 df[method_name][trial_idx] = metric
     df_filtered = df[(df["score_1"] < 1) | (df["score_2"] < 1)]
 
-    print(f"----- {task_name} -----")
-    print(methods)
-    table_line = ""
+    table_line = " ".join([word.capitalize() for word in task_name.split("_")]) + " & "
     for method_name in methods:
-        data = df_filtered[method_name]
-        if len(data) > 0:
-            table_line += f"{np.nanmean(data).round(decimals=3)} ({np.nanstd(data).round(decimals=3)})"
-        table_line += " | "
-    print(table_line)
+        if method_name == "nominal":
+            continue
 
-    for base in ["score_1", "score_2"]:
-        _, ax = plt.subplots(1, 1)
-        for method_name in ["score_1", "score_2", "sum", "mvcp"]:
-            if method_name == base:
-                continue
-            diff = df_filtered[method_name] - df_filtered[base]
-            z = np.mean(diff) / np.std(diff)
-            print(f"{method_name} : z={z} -- p={norm.cdf(z)}")
-            sns.kdeplot(diff, label=method_name, ax=ax)
-        ax.legend()
-        plt.savefig(f"results/{task_name}.png")
+        data = df_filtered[method_name]
+        data = data[data == data]
+        if len(data) > 0:
+            if method_name != "mvcp":
+                table_line += f"{np.nanmean(data).round(decimals=3)} ({np.nanstd(data).round(decimals=3)}) & "
+            else:
+                table_line += r"\textbf{" + f"{np.nanmean(data).round(decimals=3)} ({np.nanstd(data).round(decimals=3)})" + r"} \\"
+    print(table_line)

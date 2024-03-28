@@ -270,7 +270,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     return contained, np.max(opt_value)
 
 
-def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
+def run_mvcp(exp_config, task_name, model_names_arg, trial_idx, trial_size, method_name):
     x_train, x_cal, x_test = exp_config["x_train"], exp_config["x_cal"], exp_config["x_test"]
     c_train, c_cal, c_test = exp_config["c_train"], exp_config["c_cal"], exp_config["c_test"]
     ps = exp_config["ps"]
@@ -279,7 +279,7 @@ def run_mvcp(exp_config, task_name, trial_idx, trial_size, method_name):
     cached_dir = "trained_cpu"
     trained_model_names = os.listdir(cached_dir)
     # model_names = [trained_model_name for trained_model_name in trained_model_names if trained_model_name.startswith(task_name)]
-    model_names = [f"{task_name}_0-1.nf", f"{task_name}_1-2.nf"]
+    model_names = model_names_arg.split(",")
     view_dims = [[int(dim) for dim in model_name.split("_")[-1].split(".")[0].split("-")] for model_name in model_names]
 
     generative_models = []
@@ -372,12 +372,13 @@ def main(args):
         generate_data(cached_fn, args.tasks)
     with open(cached_fn, "rb") as f:
         exp_config = pickle.load(f)
-    run_mvcp(exp_config, args.tasks, int(args.trial), 1, args.fusion)
+    run_mvcp(exp_config, args.tasks, args.models, int(args.trial), 1, args.fusion)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--tasks")
+    parser.add_argument("--models")
     parser.add_argument("--trial")
     parser.add_argument("--fusion")
     args = parser.parse_args()
