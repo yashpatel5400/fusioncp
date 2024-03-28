@@ -7,7 +7,7 @@ batch_script = """#!/bin/bash
 #“#SBATCH” directives that convey submission options:
 
 #SBATCH --job-name=mvcp
-#SBATCH --mail-type=BEGIN,END
+#SBATCH --mail-type=NONE
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem-per-cpu=8g
@@ -20,10 +20,10 @@ LD_PRELOAD=/home/yppatel/anaconda3/envs/chig/lib/libstdc++.so.6 python /home/ypp
 """
 
 dispatch_scripts_dir = "dispatch_jobs"
-total_trials = 10
+total_trials = 500
 
-for task_name in ["two_moons"]:
-    for method_name in ["nominal", "score_1", "score_2", "sum", "mvcp"]:
+for task_name in ["slcp", "sir", "lotka_volterra"]:
+    for method_name in ["score_1", "score_2", "sum", "mvcp"]:
         for trial_idx in range(total_trials):
             dispatch_fn = os.path.join(dispatch_scripts_dir, f"dispatch_{method_name}_{trial_idx}.sh")
             with open(dispatch_fn, "w") as f:
