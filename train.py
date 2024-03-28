@@ -269,7 +269,7 @@ def generate_data(priors, simulators, n_pts, return_theta=False, combination_met
         # thetas[1] /= 10
         theta, x = (thetas[0][:,:2] + thetas[1][:,:2]), torch.hstack(xs)
     elif combination_method == "repeat":
-        theta, x = torch.tile(theta, (1,3)), torch.hstack(xs)
+        theta, x = torch.tile(theta, (1,1)), torch.hstack(xs)
         
     if return_theta: 
         return theta, x, view_dims
