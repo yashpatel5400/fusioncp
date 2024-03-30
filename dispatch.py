@@ -23,14 +23,16 @@ dispatch_scripts_dir = "dispatch_jobs"
 total_trials = 500
 
 task_to_models = {
+    "gaussian_linear": "gaussian_linear_0-5.nf,gaussian_linear_5-10.nf",
+    "gaussian_linear_uniform": "gaussian_linear_uniform_0-1.nf,gaussian_linear_uniform_1-2.nf",
+    "gaussian_mixture": "gaussian_mixture_0-1.nf,gaussian_mixture_1-2.nf",
     "lotka_volterra": "lotka_volterra_0-10.nf,lotka_volterra_10-20.nf",
     "sir": "sir_0-5.nf,sir_5-10.nf",
-    "slcp": "slcp_0-2.nf,slcp_2-4.nf",
-    "gaussian_linear": "gaussian_linear_0-5.nf,gaussian_linear_5-10.nf",
+    "two_moons": "two_moons_0-1.nf,two_moons_1-2.nf",
 }
 
-for task_name in ["lotka_volterra"]:
-    for method_name in ["score_1", "score_2", "sum", "mvcp"]:
+for task_name in ["gaussian_linear", "gaussian_linear_uniform", "gaussian_mixture", "sir", "two_moons"]:
+    for method_name in ["avg"]:
         for trial_idx in range(total_trials):
             dispatch_fn = os.path.join(dispatch_scripts_dir, f"dispatch_{method_name}_{trial_idx}.sh")
             with open(dispatch_fn, "w") as f:

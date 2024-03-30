@@ -144,9 +144,12 @@ def inner_opt(args):
     for i in range(N): # iterates over batch size to optimize in parallel
         for m in range(M): # number of constraints is discretizations used for ellipse
             # TODO: manually adding constraints this way bakes in 2-view form: can generalize, but fine for now
-            constraints.append(
-                cp.norm(c[i] - c_region_centers[i][0], 2) * directions[m][0] + 
-                cp.norm(c[i] - c_region_centers[i][1], 2) * directions[m][1] <= conformal_quantiles[m])
+            if len(directions[m]) == 1:
+                constraints.append(cp.norm(c[i] - c_region_centers[i][0], 2) * directions[m][0] <= conformal_quantiles[m])
+            elif len(directions[m]) == 2:
+                constraints.append(
+                    cp.norm(c[i] - c_region_centers[i][0], 2) * directions[m][0] + 
+                    cp.norm(c[i] - c_region_centers[i][1], 2) * directions[m][1] <= conformal_quantiles[m])
     
     prob = cp.Problem(objective, constraints)
     prob.solve()
@@ -155,20 +158,31 @@ def inner_opt(args):
 
 # generative model-based prediction regions
 def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B, fusion_technique):
-    def comp_gpcp_scores(x, c, J = 10):
-        scores, samples = [], []
-        for generative_model, view_dim in zip(generative_models, view_dims):
-            c_hat = generative_model.sample(J, x[:,view_dim[0]:view_dim[1]]).detach().cpu().numpy()
-            c_tiled = np.transpose(np.tile(c.detach().cpu().numpy(), (J, 1, 1)), (1, 0, 2))
-            c_diff = c_hat - c_tiled
-            c_norms = np.linalg.norm(c_diff, axis=-1)
-            scores.append(np.min(c_norms, axis=-1))
-            samples.append(c_hat)
+    def gpcp(c, c_hat):
+        _, J, _ = c_hat.shape
+        c_tiled = np.transpose(np.tile(c.detach().cpu().numpy(), (J, 1, 1)), (1, 0, 2))
+        c_diff = c_hat - c_tiled
+        c_norms = np.linalg.norm(c_diff, axis=-1)
+        return np.min(c_norms, axis=-1)
+
+    def comp_gpcp_scores(x, c, J = 10, pre_fuse = False):
+        if pre_fuse: # fusion is done *before* conformalizing here
+            fused_samples = []
+            for generative_model, view_dim in zip(generative_models, view_dims):
+                fused_samples.append(generative_model.sample(J, x[:,view_dim[0]:view_dim[1]]).detach().cpu().numpy())
+            c_hat = np.mean(fused_samples, axis=0)
+            scores, samples = [gpcp(c, c_hat)], [c_hat]
+        else:
+            scores, samples = [], []
+            for generative_model, view_dim in zip(generative_models, view_dims):
+                c_hat = generative_model.sample(J, x[:,view_dim[0]:view_dim[1]]).detach().cpu().numpy()
+                scores.append(gpcp(c, c_hat))
+                samples.append(c_hat)
         return np.array(scores).T, np.transpose(np.array(samples), (1, 0, 2, 3))
     
     # if directions are not specified, we sample M (fixed to 10 below) uniform angles from [0, 2*pi) 
-    def get_mvcp_quantile(directions=None, J = 10):
-        scores, _ = comp_gpcp_scores(x_cal, c_cal, J)
+    def get_mvcp_quantile(directions=None, J = 10, pre_fuse = False):
+        scores, _ = comp_gpcp_scores(x_cal, c_cal, J, pre_fuse)
         if len(generative_models) == 1:
             return np.quantile(proj_scores[:,0], q = 1 - alpha)
 
@@ -211,21 +225,22 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
             arr[...,i] = a
         return arr.reshape(-1, la)
 
-    if fusion_technique   == "score_1": directions = [[1,0]]
-    elif fusion_technique == "score_2": directions = [[0,1]]
-    elif fusion_technique == "sum":     directions = [[np.cos(np.pi / 4), np.sin(np.pi / 4)]]
-    elif fusion_technique == "mvcp":    directions = None
+    if fusion_technique   == "score_1": directions, pre_fuse = [[1,0]], False
+    elif fusion_technique == "score_2": directions, pre_fuse = [[0,1]], False
+    elif fusion_technique == "avg":     directions, pre_fuse = [[1]], True
+    elif fusion_technique == "sum":     directions, pre_fuse = [[np.cos(np.pi / 4), np.sin(np.pi / 4)]], False
+    elif fusion_technique == "mvcp":    directions, pre_fuse = None, False
 
     J = 10
-    directions, quantiles = get_mvcp_quantile(directions, J)
-    c_score, c_region_centers = comp_gpcp_scores(x_true, c_true)
+    directions, quantiles = get_mvcp_quantile(directions, J, pre_fuse)
+    c_score, c_region_centers = comp_gpcp_scores(x_true, c_true, J, pre_fuse)
     proj_score = np.array([np.dot(c_score, direction) for direction in directions]).T
     contained = np.sum(np.all(proj_score < quantiles, axis=1)) / len(c_score)
     print(f"Contained: {contained}")
 
     N, K, J, d = c_region_centers.shape
     Js = cartesian_product(*([np.array(list(range(J)))] * K))
-    
+
     eta = 5e-3 # learning rate
     T = 500 # optimization steps
 
@@ -236,7 +251,7 @@ def mvcp(generative_models, view_dims, alpha, x_cal, c_cal, x_true, c_true, p, B
     # start optimization loop
     for t in range(T):
         # c_region_centers is batch_size x K x J x c_dim
-        raw_maxes = list(pool.map(inner_opt, [(w, c_true.shape, directions, quantiles, c_region_centers[:,np.arange(2),j,:]) for j in Js]))
+        raw_maxes = list(pool.map(inner_opt, [(w, c_true.shape, directions, quantiles, c_region_centers[:,np.arange(c_region_centers.shape[1]),j,:]) for j in Js]))
         maxizer_per_region = np.transpose(np.array([maximizer for maximizer in raw_maxes if maximizer is not None]), (1, 0, 2))
         w_tiled = np.transpose(np.tile(w, (maxizer_per_region.shape[1], 1, 1)), (1, 0, 2))
         
@@ -298,6 +313,7 @@ def run_mvcp(exp_config, task_name, model_names_arg, trial_idx, trial_size, meth
         "nominal": nominal_solve,
         "score_1": mvcp,
         "score_2": mvcp,
+        "avg": mvcp,
         "sum": mvcp,
         "mvcp": mvcp,
     }
