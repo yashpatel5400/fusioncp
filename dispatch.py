@@ -26,7 +26,6 @@ task_to_models = {
     "gaussian_linear": "gaussian_linear_0-5.nf,gaussian_linear_5-10.nf",
     "gaussian_linear_uniform": "gaussian_linear_uniform_0-1.nf,gaussian_linear_uniform_1-2.nf",
     "gaussian_mixture": "gaussian_mixture_0-1.nf,gaussian_mixture_1-2.nf",
-    "lotka_volterra": "lotka_volterra_0-10.nf,lotka_volterra_10-20.nf",
     "sir": "sir_0-5.nf,sir_5-10.nf",
     "two_moons": "two_moons_0-1.nf,two_moons_1-2.nf",
 }
