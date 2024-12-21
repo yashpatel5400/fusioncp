@@ -1,2 +1,2 @@
 # fusioncp
-Late stage fusion conformal prediction
+Conformal ensemble prediction (multivariate score quantile envelopes)
