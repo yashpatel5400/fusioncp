@@ -39,8 +39,10 @@ def conformal_pred_split(X_train, y_train, X_test, alpha=0.05,
     preds_train = predict_fun(model, X_train)
     # Compute residuals (naive approach)
     residuals = y_train - preds_train
+    scores = np.abs(residuals)
+    
     # quantile of absolute residuals
-    q = np.quantile(np.abs(residuals), 1 - alpha)
+    q = np.quantile(scores, 1 - alpha)
     
     # Predict on test
     preds_test = predict_fun(model, X_test)
@@ -52,7 +54,7 @@ def conformal_pred_split(X_train, y_train, X_test, alpha=0.05,
     lo = preds_test[0] - q
     up = preds_test[0] + q
     
-    return {'lo': lo, 'up': up}
+    return {'lo': lo, 'up': up, 'scores': scores}
 
 
 ##############################################################################
@@ -403,8 +405,10 @@ def main():
     # => we do res.mean(axis=0), (length_mat>1).mean(axis=0) in Python
     coverage_means = res.mean(axis=0)
     length_exceed_1 = (length_mat > 1).mean(axis=0)
+    len_means = length_mat.mean(axis=0)
 
     print("Coverage means:", coverage_means)
+    print("Length means:", len_means)
     print("Fraction of times length > 1:", length_exceed_1)
 
 
