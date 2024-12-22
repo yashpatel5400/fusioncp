@@ -1,3 +1,4 @@
+import einops
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -114,7 +115,9 @@ def nnet_funs_factory(size=12, decay=1.0, maxit=2000):
 ###############################################################################
 # Conformal placeholder
 ###############################################################################
-def conformal_pred_split(X_train, y_train, X_test, alpha=0.05, 
+def conformal_pred_split(X_train, y_train, 
+                         X_cal, y_cal, 
+                         X_test, y_test, alpha=0.05, 
                          train_fun=None, predict_fun=None, 
                          seed=None):
     """
@@ -132,18 +135,21 @@ def conformal_pred_split(X_train, y_train, X_test, alpha=0.05,
     if seed is not None:
         np.random.seed(seed)
     model = train_fun(X_train, y_train)
-    preds_train = predict_fun(model, X_train)
-    residuals = y_train - preds_train
-    q = np.quantile(np.abs(residuals), 1 - alpha)
     
-    preds_test = predict_fun(model, X_test)
+    preds_cal = predict_fun(model, X_cal)
+    cal_scores = np.abs(y_cal - preds_cal)
+    q = np.quantile(cal_scores, 1 - alpha)
+    
+    test_preds = predict_fun(model, X_test)
+    test_scores = np.abs(y_test - test_preds)
+
     # If X_test is 1D or single row, shape might be (). Convert to array
-    preds_test = np.array(preds_test).ravel()
-    lo = preds_test - q
-    up = preds_test + q
+    test_preds = np.array(test_preds).ravel()
+    lo = test_preds - q
+    up = test_preds + q
     
     # Return a structure that has 'lo' and 'up' as arrays
-    return {'lo': lo, 'up': up}
+    return {'lo': lo, 'up': up, 'scores': cal_scores, 'test_scores': test_scores, 'test_preds': test_preds}
 
 ###############################################################################
 # Majority vote placeholder
@@ -195,6 +201,53 @@ def majority_vote(M, w, rho=0.5):
     return np.array(intervals)
 
 
+def get_mvcp_dirs(k, M=1_000):
+    unnorm_dirs = np.abs(np.random.multivariate_normal(np.zeros(k), np.eye(k), size=M))
+    return (unnorm_dirs / np.linalg.norm(unnorm_dirs, axis=1, keepdims=True)).T
+
+
+def get_mvcp_quantile(scores, proj_dirs, alpha):
+    # scores: N x k; proj_dirs: k x M
+    _, k = scores.shape
+    proj_scores = scores @ proj_dirs
+
+    beta_range = [1-alpha, 1-alpha/k]
+    coverage = 0.0
+    eps = .005
+
+    while not (1-alpha <= coverage and coverage <= 1-alpha + eps):
+        beta = (beta_range[0] * .8 + beta_range[1] * .2)
+        mvcp_proj_quantiles = np.quantile(proj_scores, q=beta, axis=0)
+        train_covered = einops.reduce(proj_scores < mvcp_proj_quantiles, "n p -> n", "prod")
+        coverage = np.sum(train_covered) / len(train_covered)
+        if coverage < 1-alpha:
+            beta_range[0] = beta
+        else:
+            beta_range[1] = beta
+        print(f"{beta} -- {coverage}")
+    return mvcp_proj_quantiles
+
+
+def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds):
+    in_region = lambda scores : einops.reduce(scores @ proj_dirs < mvcp_quantile, "n m -> n", "prod")
+    mvcp_lens = []
+    for i in range(len(test_preds)):
+        test_pred = test_preds[i]
+        range_ = np.max(test_pred) - np.min(test_pred)
+        delta  = range_ / 100
+        candidate_y = np.arange(np.min(test_pred) - 5 * range_, np.max(test_pred) + 5 * range_, delta)
+
+        tiled_pred = einops.repeat(test_pred, "n -> n s", s=len(candidate_y))
+        candidate_scores = np.abs(tiled_pred - candidate_y).T
+        scores_in_region = in_region(candidate_scores)
+        
+        mvcp_len = np.sum(scores_in_region) * delta / range_
+        mvcp_lens.append(mvcp_len)
+    mvcp_lens = np.array(mvcp_lens)
+    mvcp_coverage = np.mean(in_region(test_scores))
+    return mvcp_lens, mvcp_coverage
+
+
 ###############################################################################
 # Main script
 ###############################################################################
@@ -219,11 +272,15 @@ def main():
     # train/test split
     np.random.seed(123)
     full_indices = np.arange(len(y))
-    train_indices = np.random.choice(full_indices, size=5000, replace=False)
-    test_indices = np.setdiff1d(full_indices, train_indices)
+    train_indices = np.random.choice(full_indices, size=4500, replace=False)
+    remaining_indices = np.setdiff1d(full_indices, train_indices)
+    cal_indices = np.random.choice(remaining_indices, size=500, replace=False)
+    test_indices = np.setdiff1d(remaining_indices, cal_indices)
     
     ytrain = y[train_indices]
     Xtrain = X.iloc[train_indices].values  # turn to NumPy
+    ycal = y[cal_indices]
+    Xcal = X.iloc[cal_indices].values  # turn to NumPy
     y0 = y[test_indices]
     X0 = X.iloc[test_indices].values
     
@@ -257,10 +314,13 @@ def main():
     if existing_cols_to_remove:
         Xtrain_df = pd.DataFrame(Xtrain, columns=X.columns)
         Xtrain_df.drop(columns=existing_cols_to_remove, inplace=True)
+        Xcal_df = pd.DataFrame(Xcal, columns=X.columns)
+        Xcal_df.drop(columns=existing_cols_to_remove, inplace=True)
         X0_df = pd.DataFrame(X0, columns=X.columns)
         X0_df.drop(columns=existing_cols_to_remove, inplace=True)
         
         Xtrain = Xtrain_df.values
+        Xcal = Xcal_df.values
         X0 = X0_df.values
         # update X.columns if you want to keep track
         X = X.drop(columns=existing_cols_to_remove)
@@ -272,91 +332,6 @@ def main():
     plt.title("Correlation matrix (after removal)")
     plt.show()
     
-    # Indices of Split (like sample(1:5000, 2500))
-    split_ind = np.random.choice(np.arange(5000), size=2500, replace=False)
-    Xt = Xtrain[split_ind]
-    yt = ytrain[split_ind]
-    
-    # The other part is calibration if needed
-    # Quick check with randomForest
-    np.random.seed(123)
-    tr_0 = np.random.choice(np.arange(2500), size=1500, replace=False)
-    # Train small random forest
-    m0_rf = RandomForestRegressor(n_estimators=10, max_features=Xt.shape[1], random_state=123)
-    m0_rf.fit(Xt[tr_0], yt[tr_0])
-    p0_rf = m0_rf.predict(Xt[np.setdiff1d(np.arange(2500), tr_0)])
-    mse_rf = np.mean((p0_rf - yt[np.setdiff1d(np.arange(2500), tr_0)])**2)
-    print("Initial RF MSE:", mse_rf)
-    
-    # Parameter search for RF
-    par1 = np.arange(4, 15, 2)   # seq(4, 14, by=2)
-    par2 = np.arange(100, 501, 100)
-    # expand grid
-    hypp = [(mtry_, ntree_) for mtry_ in par1 for ntree_ in par2]
-    res = []
-    for i, (mtry_, ntree_) in enumerate(hypp, start=1):
-        # train
-        m0_rf_ = RandomForestRegressor(
-            n_estimators=ntree_, 
-            max_features=mtry_,
-            random_state=123
-        )
-        m0_rf_.fit(Xt[tr_0], yt[tr_0])
-        p0_rf_ = m0_rf_.predict(Xt[np.setdiff1d(np.arange(2500), tr_0)])
-        mse_ = np.mean((p0_rf_ - yt[np.setdiff1d(np.arange(2500), tr_0)])**2)
-        res.append(mse_)
-        if i % 10 == 0:
-            print(f"RF grid search iteration {i}/{len(hypp)}: mtry={mtry_}, ntree={ntree_}, MSE={mse_}")
-    
-    # minimal quick plot
-    res = np.array(res)
-    plt.figure()
-    # just plot par1 for illustration (though par1 and par2 vary)
-    plt.scatter([h[0] for h in hypp], res)
-    plt.xlabel("mtry")
-    plt.ylabel("MSE")
-    plt.title("RF param search (rough illustration)")
-    plt.show()
-    
-    # find best
-    best_idx = np.argmin(res)
-    print("Best (mtry, ntree):", hypp[best_idx], "MSE =", res[best_idx])
-    
-    # NNet param search
-    par1_nnet = np.arange(4, 17, 2)    # seq(4,16,by=2)
-    par2_nnet = 10.0**(np.arange(-3, 3))   # 10^(-3:2)
-    # expand.grid
-    hypp_nnet = [(s, d) for s in par1_nnet for d in par2_nnet]
-    res_nnet = []
-    random.seed(1234)
-    np.random.seed(1234)
-    for i, (size_, decay_) in enumerate(hypp_nnet, start=1):
-        model_nnet = MLPRegressor(
-            hidden_layer_sizes=(size_,),
-            alpha=decay_,
-            max_iter=2000,
-            solver='adam',
-            random_state=1234
-        )
-        model_nnet.fit(Xt[tr_0], yt[tr_0])
-        p0_nn = model_nnet.predict(Xt[np.setdiff1d(np.arange(2500), tr_0)])
-        mse_ = np.mean((p0_nn - yt[np.setdiff1d(np.arange(2500), tr_0)])**2)
-        res_nnet.append(mse_)
-        if i % 10 == 0:
-            print(f"NNET grid search iteration {i}/{len(hypp_nnet)}: size={size_}, decay={decay_}, MSE={mse_}")
-    
-    res_nnet = np.array(res_nnet)
-    # quick plot
-    plt.figure()
-    plt.scatter([h[0] for h in hypp_nnet], res_nnet)
-    plt.xlabel("size")
-    plt.ylabel("MSE")
-    plt.title("NN param search (rough illustration)")
-    plt.show()
-    
-    best_idx_nn = np.argmin(res_nnet)
-    print("Best (size, decay):", hypp_nnet[best_idx_nn], "MSE =", res_nnet[best_idx_nn])
-
     # define final nnet.funs
     # from R code: nnet.train(x, y, size=12, decay=1, maxit=2000, linout=T)
     def final_nnet_train(x, y, **kwargs):
@@ -377,6 +352,7 @@ def main():
         lm_ = LinearRegression()
         lm_.fit(X, y)
         return lm_
+
     def predict_lm(m, X):
         return m.predict(X)
     
@@ -398,17 +374,30 @@ def main():
     funs = [lmF, lassoF, rfF, nnet_funs]
     
     # apply conformal
+    split_ind = np.random.choice(np.arange(5000), size=2500, replace=False)
+    alpha = 0.05
     conf_ints1 = []
     for f_ in funs:
         out_ = conformal_pred_split(
-            Xt, yt, X0,
-            alpha=0.05,
+            Xtrain, ytrain, 
+            Xcal, ycal, 
+            X0, y0,
+            alpha=alpha,
             train_fun=f_['train'],
             predict_fun=f_['predict'],
             seed=split_ind  # storing seed for demonstration
         )
         conf_ints1.append(out_)
     
+    test_scores = np.array([out['test_scores'] for out in conf_ints1]).T
+    test_preds = np.array([out['test_preds'] for out in conf_ints1]).T
+
+    stacked_scores = np.array([conf_int['scores'] for conf_int in conf_ints1]).T
+    _, k = stacked_scores.shape
+    proj_dirs = get_mvcp_dirs(k, M=1_000)
+    mvcp_quantile = get_mvcp_quantile(stacked_scores, proj_dirs, alpha)
+    mvcp_lens, mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
+
     # Coverage of each method
     # out[[i]] => c(lo <= y0 & y0 <= up)
     coverage_bools = []
@@ -421,7 +410,7 @@ def main():
     # colMeans in R => coverage_bools.mean(axis=0)
     method_cov = coverage_bools.mean(axis=0)
     print("Method-by-method coverage:", method_cov)
-    
+
     # Randomized majority vote coverage
     # rowMeans coverage => fraction of methods covering each point
     row_means = coverage_bools.mean(axis=1)
@@ -481,14 +470,15 @@ def main():
             res_len[i,2] = sum(ci3[:,1] - ci3[:,0])
     
     # combine coverage
-    coverages = np.concatenate([method_cov, coverages_rand])
+    coverages = np.concatenate([method_cov, coverages_rand, [mvcp_coverage]])
     # combine lengths
     # The R code does: avg_length of each method, plus colMeans(res_len)
     method_lengths = avg_lengths  # 4 methods
     # colMeans(res_len) => average interval size for each scenario
     # shape (len(y0), 3)
     majority_lengths = res_len.mean(axis=0)
-    lengths_combined = np.concatenate([method_lengths, majority_lengths])
+    avg_mvcp_length = np.mean(mvcp_lens)
+    lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_mvcp_length]])
     
     # fraction of times # intervals > 1
     frac_gt1 = (res_dou > 1).mean(axis=0)
@@ -500,7 +490,7 @@ def main():
     methods_name = [
         "Linear Model", "Lasso (CV)", "Random Forest", "Neural Net",
         "Majority Vote (>0.5)", "Rand Majority Vote (>0.5 + u1)",
-        "Rand Vote (>u2)"
+        "Rand Vote (>u2)", "MVCP"
     ]
     
     # Build final table
