@@ -499,9 +499,12 @@ def main():
     print("Lengths of 4 methods + 3 majority-vote scenarios:\n", lengths_combined)
     
     methods_name = [
-        "Linear Model", "Lasso (CV)", "Random Forest", "Neural Net",
-        "Majority Vote (>0.5)", "Rand Majority Vote (>0.5 + u1)",
-        "Rand Vote (>u2)", "MVCP"
+        "Linear Model", "LASSO", "Random Forest", "Neural Net",
+        r"\mathcal{C}^{M}", 
+        r"\mathcal{C}^{R}",
+        r"\mathcal{C}^{U}", 
+        # "Single Projection", 
+        "DECP",
     ]
     
     # Build final table
@@ -517,7 +520,7 @@ def main():
         "Std Lengths": np.std(trial_lengths_combined, axis=0),
     })
     
-    print("\nFinal Table of Coverage / Length:\n", df_table.to_latex(float_format="{:.3f}".format))
+    print("\nFinal Table of Coverage / Length:\n", df_table.T.to_latex(float_format="{:.3f}".format))
 
 if __name__ == "__main__":
     main()
