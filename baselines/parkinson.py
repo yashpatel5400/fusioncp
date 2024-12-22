@@ -10,6 +10,8 @@ from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neural_network import MLPRegressor
 
+np.set_printoptions(precision=3)
+
 ###############################################################################
 # 1) Helper Functions (placeholders for the ones from utils.R in R)
 ###############################################################################
@@ -248,29 +250,7 @@ def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
     return mvcp_lens, mvcp_coverage
 
 
-###############################################################################
-# Main script
-###############################################################################
-def main():
-    # ------------------
-    # Load data
-    # ------------------
-    # In R: read.table("merged_dataset.csv", ...)
-    # Adjust path/sep as needed
-    df = pd.read_csv("merged_dataset.csv", sep=",")
-    
-    # creation of the outcome and the X matrix
-    y = df["total_UPDRS"].values
-    # remove first two columns from X (like [-c(1,2)])
-    X = df.drop(columns=["total_UPDRS", df.columns[0]]).copy()
-    
-    # scale columns 0..17 (like X[,1:18] in R, but be mindful of indexing)
-    # If X has exactly 18 numeric columns to scale, do that:
-    cols_to_scale = X.columns[:18]
-    X[cols_to_scale] = (X[cols_to_scale] - X[cols_to_scale].mean()) / X[cols_to_scale].std(ddof=0)
-    
-    # train/test split
-    np.random.seed(123)
+def trial(X, y):
     full_indices = np.arange(len(y))
     train_indices = np.random.choice(full_indices, size=4500, replace=False)
     remaining_indices = np.setdiff1d(full_indices, train_indices)
@@ -283,7 +263,7 @@ def main():
     Xcal = X.iloc[cal_indices].values  # turn to NumPy
     y0 = y[test_indices]
     X0 = X.iloc[test_indices].values
-    
+
     # histogram of ytrain
     plt.figure()
     plt.hist(ytrain, bins=10, color='lightblue', edgecolor='black')
@@ -480,12 +460,43 @@ def main():
     avg_mvcp_length = np.mean(mvcp_lens)
     lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_mvcp_length]])
     
-    # fraction of times # intervals > 1
-    frac_gt1 = (res_dou > 1).mean(axis=0)
+    return coverages, lengths_combined
+
+
+###############################################################################
+# Main script
+###############################################################################
+def main():
+    # ------------------
+    # Load data
+    # ------------------
+    # In R: read.table("merged_dataset.csv", ...)
+    # Adjust path/sep as needed
+    df = pd.read_csv("merged_dataset.csv", sep=",")
     
+    # creation of the outcome and the X matrix
+    y = df["total_UPDRS"].values
+    # remove first two columns from X (like [-c(1,2)])
+    X = df.drop(columns=["total_UPDRS", df.columns[0]]).copy()
+    
+    # scale columns 0..17 (like X[,1:18] in R, but be mindful of indexing)
+    # If X has exactly 18 numeric columns to scale, do that:
+    cols_to_scale = X.columns[:18]
+    X[cols_to_scale] = (X[cols_to_scale] - X[cols_to_scale].mean()) / X[cols_to_scale].std(ddof=0)
+    
+    # train/test split
+    np.random.seed(123)
+    num_trials = 10
+    trial_coverages, trial_lengths_combined = [], []
+    for _ in range(num_trials):
+        coverages, lengths_combined = trial(X, y)
+        trial_coverages.append(coverages)
+        trial_lengths_combined.append(lengths_combined)
+    trial_coverages = np.array(trial_coverages)
+    trial_lengths_combined = np.array(trial_lengths_combined)
+
     print("\nCoverage of 4 methods + 3 random thresholds:\n", coverages)
     print("Lengths of 4 methods + 3 majority-vote scenarios:\n", lengths_combined)
-    print("Fraction (#intervals>1) for each majority vote scenario:", frac_gt1)
     
     methods_name = [
         "Linear Model", "Lasso (CV)", "Random Forest", "Neural Net",
@@ -498,11 +509,15 @@ def main():
     # lengths => first 4 from methods, then 3 from majority
     df_table = pd.DataFrame({
         "Methods": methods_name,
-        "Coverage": coverages,
-        "Lengths": lengths_combined
+
+        "Mean Coverage": np.mean(trial_coverages, axis=0),
+        "Std Coverage": np.std(trial_coverages, axis=0),
+
+        "Mean Lengths": np.mean(trial_lengths_combined, axis=0),
+        "Std Lengths": np.std(trial_lengths_combined, axis=0),
     })
     
-    print("\nFinal Table of Coverage / Length:\n", df_table)
+    print("\nFinal Table of Coverage / Length:\n", df_table.to_latex(float_format="{:.3f}".format))
 
 if __name__ == "__main__":
     main()
