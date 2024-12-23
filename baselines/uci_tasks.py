@@ -1,5 +1,7 @@
+import argparse
 import einops
 import numpy as np
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -9,6 +11,8 @@ import random
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neural_network import MLPRegressor
+
+from uci_datasets import Dataset
 
 np.set_printoptions(precision=3)
 
@@ -123,12 +127,9 @@ def conformal_pred_split(X_train, y_train,
                          train_fun=None, predict_fun=None, 
                          seed=None):
     """
-    A naive stand-in for conformal.pred.split from R's conformalInference.
-    If you want a real conformal approach, 
-    use e.g. MAPIE or your own split-conformal logic.
     Here, we do:
       1) Train model
-      2) residuals = y_train - preds_train
+      2) residuals = y_cal - preds_cal
       3) q = quantile(|residuals|, 1-alpha)
       4) lo = pred_test - q
          up = pred_test + q
@@ -141,7 +142,7 @@ def conformal_pred_split(X_train, y_train,
     preds_cal = predict_fun(model, X_cal)
     cal_scores = np.abs(y_cal - preds_cal)
     q = np.quantile(cal_scores, 1 - alpha)
-    
+
     test_preds = predict_fun(model, X_test)
     test_scores = np.abs(y_test - test_preds)
 
@@ -210,24 +211,37 @@ def get_mvcp_dirs(k, M=1_000):
 
 def get_mvcp_quantile(scores, proj_dirs, alpha):
     # scores: N x k; proj_dirs: k x M
+    N_cal_shape = int(len(scores) * .2)
+    
     _, k = scores.shape
     proj_scores = scores @ proj_dirs
+    proj_scores_shape, proj_scores_quantile = proj_scores[:N_cal_shape], proj_scores[N_cal_shape:]
 
-    beta_range = [1-alpha, 1-alpha/k]
+    # step 1: compute quantile profile with S_C^1
+    beta_range = [1-alpha, 1-alpha/(2 * k)]
     coverage = 0.0
-    eps = .005
+    eps = .01
 
+    beta_prev = None
     while not (1-alpha <= coverage and coverage <= 1-alpha + eps):
         beta = (beta_range[0] * .8 + beta_range[1] * .2)
-        mvcp_proj_quantiles = np.quantile(proj_scores, q=beta, axis=0)
-        train_covered = einops.reduce(proj_scores < mvcp_proj_quantiles, "n p -> n", "prod")
+        mvcp_proj_quantiles = np.quantile(proj_scores_shape, q=beta, axis=0)
+        train_covered = einops.reduce(proj_scores_shape < mvcp_proj_quantiles, "n p -> n", "prod")
         coverage = np.sum(train_covered) / len(train_covered)
+
+        beta_prev = beta
         if coverage < 1-alpha:
             beta_range[0] = beta
         else:
             beta_range[1] = beta
+        if beta_prev == beta:
+            break
         print(f"{beta} -- {coverage}")
-    return mvcp_proj_quantiles
+
+    # step 2: adjust size with S_C^2
+    ts = einops.reduce(proj_scores_quantile / mvcp_proj_quantiles, "n m -> n", "max")
+    t_star = np.quantile(ts, 1 - alpha)
+    return t_star * mvcp_proj_quantiles
 
 
 def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds):
@@ -250,70 +264,22 @@ def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
     return mvcp_lens, mvcp_coverage
 
 
-def trial(X, y):
+def prep_data(X, y):
     full_indices = np.arange(len(y))
     train_indices = np.random.choice(full_indices, size=4500, replace=False)
     remaining_indices = np.setdiff1d(full_indices, train_indices)
     cal_indices = np.random.choice(remaining_indices, size=500, replace=False)
     test_indices = np.setdiff1d(remaining_indices, cal_indices)
     
-    ytrain = y[train_indices]
-    Xtrain = X.iloc[train_indices].values  # turn to NumPy
-    ycal = y[cal_indices]
-    Xcal = X.iloc[cal_indices].values  # turn to NumPy
-    y0 = y[test_indices]
-    X0 = X.iloc[test_indices].values
+    Xtrain, ytrain = X[train_indices], y[train_indices].ravel()
+    Xcal, ycal = X[cal_indices], y[cal_indices].ravel()
+    Xtest, ytest = X[test_indices], y[test_indices].ravel()
+    return (Xtrain, ytrain), (Xcal, ycal), (Xtest, ytest)
 
-    # histogram of ytrain
-    plt.figure()
-    plt.hist(ytrain, bins=10, color='lightblue', edgecolor='black')
-    plt.title("Histogram of total UPDRS")
-    plt.xlabel("total UPDRS")
-    plt.ylabel("Freq")
-    plt.show()
-    
-    # correlation plot using seaborn
-    corr_mat = np.corrcoef(Xtrain, rowvar=False)
-    plt.figure(figsize=(8,6))
-    sns.heatmap(corr_mat, cmap='coolwarm')
-    plt.title("Correlation matrix for Xtrain")
-    plt.show()
-    
-    # We mimic R's approach:
-    # find correlations > 0.975 in absolute value
-    # Then remove columns "Jitter.RAP", etc. if they exist
-    # We'll do a small example of how you might do it:
-    corr_df = pd.DataFrame(corr_mat)
-    # We'll just show how to find large correlations (similar to your approach).
-    # In R code: filter cor < -0.975 | cor > 0.975
-    # The user specifically removed c("Jitter.RAP", "Jitter.DDP", "Shimmer", "Shimmer.dB.", "Shimmer.APQ3").
-    # We'll do the same if those columns exist:
-    cols_to_remove = ["Jitter.RAP","Jitter.DDP","Shimmer","Shimmer.dB.","Shimmer.APQ3"]
-    existing_cols_to_remove = [c for c in cols_to_remove if c in X.columns]
-    # remove them
-    if existing_cols_to_remove:
-        Xtrain_df = pd.DataFrame(Xtrain, columns=X.columns)
-        Xtrain_df.drop(columns=existing_cols_to_remove, inplace=True)
-        Xcal_df = pd.DataFrame(Xcal, columns=X.columns)
-        Xcal_df.drop(columns=existing_cols_to_remove, inplace=True)
-        X0_df = pd.DataFrame(X0, columns=X.columns)
-        X0_df.drop(columns=existing_cols_to_remove, inplace=True)
-        
-        Xtrain = Xtrain_df.values
-        Xcal = Xcal_df.values
-        X0 = X0_df.values
-        # update X.columns if you want to keep track
-        X = X.drop(columns=existing_cols_to_remove)
-    
-    # correlation again after removal (optional)
-    corr_mat2 = np.corrcoef(Xtrain, rowvar=False)
-    plt.figure(figsize=(8,6))
-    sns.heatmap(corr_mat2, cmap='coolwarm')
-    plt.title("Correlation matrix (after removal)")
-    plt.show()
-    
-    # define final nnet.funs
-    # from R code: nnet.train(x, y, size=12, decay=1, maxit=2000, linout=T)
+
+def trial(X, y):
+    (Xtrain, ytrain), (Xcal, ycal), (Xtest, ytest) = prep_data(X, y)
+
     def final_nnet_train(x, y, **kwargs):
         return nnet_train(x, y, size=12, decay=1.0, maxit=2000, linout=True)
     
@@ -325,9 +291,6 @@ def trial(X, y):
         'predict': final_nnet_predict
     }
     
-    # Conformal predictions
-    # Build funs: 
-    #   LM, Lasso(CV), RF(ntree=400, varfrac=1 => mtry=all), NNet
     def train_lm(X, y):
         lm_ = LinearRegression()
         lm_.fit(X, y)
@@ -335,8 +298,6 @@ def trial(X, y):
 
     def predict_lm(m, X):
         return m.predict(X)
-    
-    lmF = {'train': train_lm, 'predict': predict_lm}
     
     def train_lasso_cv(X, y):
         from sklearn.linear_model import LassoCV
@@ -346,26 +307,23 @@ def trial(X, y):
     def predict_lasso_cv(m, X):
         return m.predict(X)
     
+    lmF = {'train': train_lm, 'predict': predict_lm}
     lassoF = {'train': train_lasso_cv, 'predict': predict_lasso_cv}
-    
-    rfF = rf_funs(ntree=400, varfrac=1)  # mimic best found
-    # nnet_funs is already defined
-    
+    rfF = rf_funs(ntree=400, varfrac=1)
+
     funs = [lmF, lassoF, rfF, nnet_funs]
     
     # apply conformal
-    split_ind = np.random.choice(np.arange(5000), size=2500, replace=False)
     alpha = 0.05
     conf_ints1 = []
     for f_ in funs:
         out_ = conformal_pred_split(
             Xtrain, ytrain, 
             Xcal, ycal, 
-            X0, y0,
+            Xtest, ytest,
             alpha=alpha,
             train_fun=f_['train'],
             predict_fun=f_['predict'],
-            seed=split_ind  # storing seed for demonstration
         )
         conf_ints1.append(out_)
     
@@ -378,19 +336,14 @@ def trial(X, y):
     mvcp_quantile = get_mvcp_quantile(stacked_scores, proj_dirs, alpha)
     mvcp_lens, mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
 
-    # Coverage of each method
-    # out[[i]] => c(lo <= y0 & y0 <= up)
     coverage_bools = []
     for c_ in conf_ints1:
-        coverage_each = ((c_['lo'] <= y0) & (y0 <= c_['up'])).astype(float)
+        coverage_each = ((c_['lo'] <= ytest) & (ytest <= c_['up'])).astype(float)
         coverage_bools.append(coverage_each)
     
     coverage_bools = np.column_stack(coverage_bools)
-    # coverage_bools shape is (len(y0), 4)
-    # colMeans in R => coverage_bools.mean(axis=0)
     method_cov = coverage_bools.mean(axis=0)
-    print("Method-by-method coverage:", method_cov)
-
+    
     # Randomized majority vote coverage
     # rowMeans coverage => fraction of methods covering each point
     row_means = coverage_bools.mean(axis=1)
@@ -407,24 +360,20 @@ def trial(X, y):
         our_out2.mean(), 
         our_out3.mean()
     ]
-    print("Randomized coverage thresholds:", coverages_rand)
     
     # Length of each method's intervals
     avg_lengths = []
     for c_ in conf_ints1:
         lengths_ = c_['up'] - c_['lo']
         avg_lengths.append(lengths_.mean())
-    
-    # majority vote intervals
-    # res_len => keep track of lengths
-    # res_dou => keep track of number of intervals?
-    res_len = np.zeros((len(y0), 3))
-    res_dou = np.zeros((len(y0), 3))
+        
+    res_len = np.zeros((len(ytest), 3))
+    res_dou = np.zeros((len(ytest), 3))
     
     # Build M: 4 intervals -> shape (4,2)
     w_ = np.full(4, 1.0/4)  # uniform weights for 4 methods
     
-    for i in range(len(y0)):
+    for i in range(len(ytest)):
         M = np.zeros((4,2))
         for j in range(4):
             M[j,0] = conf_ints1[j]['lo'][i]
@@ -455,7 +404,7 @@ def trial(X, y):
     # The R code does: avg_length of each method, plus colMeans(res_len)
     method_lengths = avg_lengths  # 4 methods
     # colMeans(res_len) => average interval size for each scenario
-    # shape (len(y0), 3)
+    # shape (len(ytest), 3)
     majority_lengths = res_len.mean(axis=0)
     avg_mvcp_length = np.mean(mvcp_lens)
     lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_mvcp_length]])
@@ -466,25 +415,7 @@ def trial(X, y):
 ###############################################################################
 # Main script
 ###############################################################################
-def main():
-    # ------------------
-    # Load data
-    # ------------------
-    # In R: read.table("merged_dataset.csv", ...)
-    # Adjust path/sep as needed
-    df = pd.read_csv("merged_dataset.csv", sep=",")
-    
-    # creation of the outcome and the X matrix
-    y = df["total_UPDRS"].values
-    # remove first two columns from X (like [-c(1,2)])
-    X = df.drop(columns=["total_UPDRS", df.columns[0]]).copy()
-    
-    # scale columns 0..17 (like X[,1:18] in R, but be mindful of indexing)
-    # If X has exactly 18 numeric columns to scale, do that:
-    cols_to_scale = X.columns[:18]
-    X[cols_to_scale] = (X[cols_to_scale] - X[cols_to_scale].mean()) / X[cols_to_scale].std(ddof=0)
-    
-    # train/test split
+def main(task_name, X, y):
     np.random.seed(123)
     num_trials = 10
     trial_coverages, trial_lengths_combined = [], []
@@ -494,33 +425,41 @@ def main():
         trial_lengths_combined.append(lengths_combined)
     trial_coverages = np.array(trial_coverages)
     trial_lengths_combined = np.array(trial_lengths_combined)
-
-    print("\nCoverage of 4 methods + 3 random thresholds:\n", coverages)
-    print("Lengths of 4 methods + 3 majority-vote scenarios:\n", lengths_combined)
     
     methods_name = [
         "Linear Model", "LASSO", "Random Forest", "Neural Net",
         r"\mathcal{C}^{M}", 
         r"\mathcal{C}^{R}",
         r"\mathcal{C}^{U}", 
-        # "Single Projection", 
         "DECP",
     ]
     
-    # Build final table
-    # coverage => first 7
-    # lengths => first 4 from methods, then 3 from majority
     df_table = pd.DataFrame({
-        "Methods": methods_name,
+        "methods": methods_name,
 
-        "Mean Coverage": np.mean(trial_coverages, axis=0),
-        "Std Coverage": np.std(trial_coverages, axis=0),
+        "mean_cov": np.mean(trial_coverages, axis=0),
+        "std_cov": np.std(trial_coverages, axis=0),
 
-        "Mean Lengths": np.mean(trial_lengths_combined, axis=0),
-        "Std Lengths": np.std(trial_lengths_combined, axis=0),
-    })
+        "mean_len": np.mean(trial_lengths_combined, axis=0),
+        "std_len": np.std(trial_lengths_combined, axis=0),
+    }).T
+
+    df_table.loc["cov"] = df_table.loc["mean_cov"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_cov"].astype(float).round(3).astype(str) + ")"
+    df_table.loc["len"] = df_table.loc["mean_len"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_len"].astype(float).round(3).astype(str) + ")"
+    df_table.at["len", 7] = r"\textbf{" +  df_table.at["len", 7] + "}"
+
+    latex_output = df_table.loc[["cov", "len"]].to_latex(float_format="{:.3f}".format)
     
-    print("\nFinal Table of Coverage / Length:\n", df_table.T.to_latex(float_format="{:.3f}".format))
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+    with open(os.path.join(results_dir, f"{task_name}.txt"), "w") as f:
+        f.write(latex_output)
+    
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task")
+    args = parser.parse_args()
+
+    data = Dataset(args.task)
+    main(args.task, data.x, data.y)
