@@ -241,7 +241,7 @@ def get_mvcp_quantile(scores, proj_dirs, alpha):
     # step 2: adjust size with S_C^2
     ts = einops.reduce(proj_scores_quantile / mvcp_proj_quantiles, "n m -> n", "max")
     t_star = np.quantile(ts, 1 - alpha)
-    return t_star * mvcp_proj_quantiles
+    return mvcp_proj_quantiles, t_star * mvcp_proj_quantiles
 
 
 def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds):
@@ -265,10 +265,14 @@ def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
 
 
 def prep_data(X, y):
+    N = len(y)
+    N_train = int(0.8 * N)
+    N_cal   = int(0.1 * N)
+
     full_indices = np.arange(len(y))
-    train_indices = np.random.choice(full_indices, size=4500, replace=False)
+    train_indices = np.random.choice(full_indices, size=N_train, replace=False)
     remaining_indices = np.setdiff1d(full_indices, train_indices)
-    cal_indices = np.random.choice(remaining_indices, size=500, replace=False)
+    cal_indices = np.random.choice(remaining_indices, size=N_cal, replace=False)
     test_indices = np.setdiff1d(remaining_indices, cal_indices)
     
     Xtrain, ytrain = X[train_indices], y[train_indices].ravel()
@@ -333,7 +337,10 @@ def trial(X, y):
     stacked_scores = np.array([conf_int['scores'] for conf_int in conf_ints1]).T
     _, k = stacked_scores.shape
     proj_dirs = get_mvcp_dirs(k, M=1_000)
-    mvcp_quantile = get_mvcp_quantile(stacked_scores, proj_dirs, alpha)
+    
+    # no_recal_mvcp_quantile is just used to demonstrate recalibration is necessary for coverage
+    no_recal_mvcp_quantile, mvcp_quantile = get_mvcp_quantile(stacked_scores, proj_dirs, alpha)
+    no_recal_mvcp_lens, no_recal_mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, no_recal_mvcp_quantile, test_scores, test_preds)
     mvcp_lens, mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
 
     coverage_bools = []
@@ -399,15 +406,16 @@ def trial(X, y):
             res_len[i,2] = sum(ci3[:,1] - ci3[:,0])
     
     # combine coverage
-    coverages = np.concatenate([method_cov, coverages_rand, [mvcp_coverage]])
+    coverages = np.concatenate([method_cov, coverages_rand, [no_recal_mvcp_coverage, mvcp_coverage]])
     # combine lengths
     # The R code does: avg_length of each method, plus colMeans(res_len)
     method_lengths = avg_lengths  # 4 methods
     # colMeans(res_len) => average interval size for each scenario
     # shape (len(ytest), 3)
     majority_lengths = res_len.mean(axis=0)
+    avg_no_recal_mvcp_length = np.mean(no_recal_mvcp_lens)
     avg_mvcp_length = np.mean(mvcp_lens)
-    lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_mvcp_length]])
+    lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_no_recal_mvcp_length, avg_mvcp_length]])
     
     return coverages, lengths_combined
 
@@ -431,6 +439,7 @@ def main(task_name, X, y):
         r"\mathcal{C}^{M}", 
         r"\mathcal{C}^{R}",
         r"\mathcal{C}^{U}", 
+        "DECP (Single-Stage)",
         "DECP",
     ]
     
@@ -446,7 +455,7 @@ def main(task_name, X, y):
 
     df_table.loc["cov"] = df_table.loc["mean_cov"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_cov"].astype(float).round(3).astype(str) + ")"
     df_table.loc["len"] = df_table.loc["mean_len"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_len"].astype(float).round(3).astype(str) + ")"
-    df_table.at["len", 7] = r"\textbf{" +  df_table.at["len", 7] + "}"
+    df_table.at["len", 8] = r"\textbf{" +  df_table.at["len", 8] + "}"
 
     latex_output = df_table.loc[["cov", "len"]].to_latex(float_format="{:.3f}".format)
     

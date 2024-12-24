@@ -16,9 +16,9 @@ def extract_rows_from_file(filename):
 # Function to create a combined LaTeX table
 def create_combined_table(file_rows):
     header = (
-        "\\begin{tabular}{cccccccccc}\n"
+        "\\begin{tabular}{ccccccccccc}\n"
         "\\toprule\n"
-        r"Dataset & Methods & Linear Model & LASSO & Random Forest & Neural Net & $\mathcal{C}^{M}$ & $\mathcal{C}^{R}$ & $\mathcal{C}^{U}$ & DECP \\"
+        r"Dataset & Methods & Linear Model & LASSO & Random Forest & Neural Net & $\mathcal{C}^{M}$ & $\mathcal{C}^{R}$ & $\mathcal{C}^{U}$ & \textit{DECP (Single-Stage)} & DECP \\"
         "\\midrule"
     )
 
@@ -32,6 +32,7 @@ def create_combined_table(file_rows):
         for i, row in enumerate(rows):
             # Separate metric (cov, len, etc.) from the rest of the row
             metric, *values = row.split('&')
+            values[-2] = r"\textit{" + values[-2] + r"}"
             values_str = ' & '.join(values).strip()
             if i == 0:
                 body += f"{os.path.basename(filename).split('.')[0]} "
