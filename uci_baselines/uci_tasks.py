@@ -6,12 +6,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import random
+import openml
 
 # scikit-learn imports
 from sklearn.linear_model import LinearRegression, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neural_network import MLPRegressor
 
+import openml
+from openml.tasks import TaskType
 from uci_datasets import Dataset
 
 np.set_printoptions(precision=3)
@@ -19,6 +22,22 @@ np.set_printoptions(precision=3)
 ###############################################################################
 # 1) Helper Functions (placeholders for the ones from utils.R in R)
 ###############################################################################
+
+from sklearn.svm import SVR
+
+def svr_train(X, y, C=1.0, epsilon=0.1):
+    model = SVR(C=C, epsilon=epsilon)
+    model.fit(X, y)
+    return model
+
+def svr_predict(model, X):
+    return model.predict(X)
+
+def svr_funs(C=1.0, epsilon=0.1):
+    return {
+        'train': lambda X, y: svr_train(X, y, C=C, epsilon=epsilon),
+        'predict': svr_predict
+    }
 
 def lm_train(X, y):
     """Mimic a simple linear model (no CV)."""
@@ -211,7 +230,7 @@ def get_mvcp_dirs(k, M=1_000):
 
 def get_mvcp_quantile(scores, proj_dirs, alpha):
     # scores: N x k; proj_dirs: k x M
-    N_cal_shape = int(len(scores) * .2)
+    N_cal_shape = int(len(scores) * .05)
     
     _, k = scores.shape
     proj_scores = scores @ proj_dirs
@@ -247,6 +266,7 @@ def get_mvcp_quantile(scores, proj_dirs, alpha):
 def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds):
     in_region = lambda scores : einops.reduce(scores @ proj_dirs < mvcp_quantile, "n m -> n", "prod")
     mvcp_lens = []
+    candidate_ys, scores_in_regions = [], []
     for i in range(len(test_preds)):
         test_pred = test_preds[i]
         range_ = np.max(test_pred) - np.min(test_pred)
@@ -257,17 +277,24 @@ def compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
         candidate_scores = np.abs(tiled_pred - candidate_y).T
         scores_in_region = in_region(candidate_scores)
         
-        mvcp_len = np.sum(scores_in_region) * delta / range_
+        mvcp_len = np.sum(scores_in_region) * delta
         mvcp_lens.append(mvcp_len)
+
+        if i == 0:
+            candidate_ys.append(candidate_y)
+            scores_in_regions.append(scores_in_region)
     mvcp_lens = np.array(mvcp_lens)
+    candidate_ys = np.array(candidate_ys)
+    scores_in_regions = np.array(scores_in_regions)
+
     mvcp_coverage = np.mean(in_region(test_scores))
-    return mvcp_lens, mvcp_coverage
+    return mvcp_lens, mvcp_coverage, candidate_ys, scores_in_regions
 
 
 def prep_data(X, y):
     N = len(y)
-    N_train = int(0.8 * N)
-    N_cal   = int(0.1 * N)
+    N_train = int(0.5 * N)
+    N_cal   = int(0.45 * N)
 
     full_indices = np.arange(len(y))
     train_indices = np.random.choice(full_indices, size=N_train, replace=False)
@@ -281,7 +308,88 @@ def prep_data(X, y):
     return (Xtrain, ytrain), (Xcal, ycal), (Xtest, ytest)
 
 
-def trial(X, y):
+def visualize_interval(candidates, in_interval, standard_intervals, task_idx, alpha, suite_id=353):
+    fn = f"{task_idx}_{alpha}.png"
+    task_id = openml.study.get_suite(suite_id).tasks[task_idx]
+    task_name = str(task_id)
+
+    # Compute interval width from candidates
+    width = candidates[1] - candidates[0]
+    half_width = width / 2
+
+    # Build merged intervals from in_interval
+    intervals = []
+    for c, flag in zip(candidates, in_interval):
+        if flag:
+            intervals.append((c - half_width, c + half_width))
+
+    # Merge adjacent/overlapping intervals
+    merged = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = end
+
+    n_lines = 1 + len(standard_intervals)
+    fig, axs = plt.subplots(n_lines, 1, figsize=(10, 1.2 * n_lines), sharex=True)
+
+    if n_lines == 1:
+        axs = [axs]
+
+    # Plot in_interval on top
+    axs[0].hlines(1, min(candidates) - width, max(candidates) + width, color='black', linewidth=1.5)
+    for start, end in merged:
+        axs[0].fill_betweenx([0.9, 1.1], start, end, color='skyblue')
+    axs[0].set_yticks([])
+    axs[0].set_title("CSA")
+
+    # Plot each standard interval
+    for i, method_name in enumerate(standard_intervals):
+        start, end = standard_intervals[method_name]
+        ax = axs[i+1]
+        ax.hlines(1, min(candidates) - width, max(candidates) + width, color='black', linewidth=1.5)
+        ax.fill_betweenx([0.9, 1.1], start, end, color='orange')
+        ax.set_yticks([])
+        # Wrap LaTeX in $...$ if it contains math
+        title_str = f"${method_name}$" if "\\" in method_name else method_name
+        ax.set_title(title_str)
+
+    # Shared aesthetics
+    for ax in axs:
+        ax.set_ylim(0.8, 1.2)
+        ax.set_xlim(min(candidates) - width, max(candidates) + width)
+        ax.spines[['top', 'left', 'right']].set_visible(False)
+
+    fig.suptitle(f"Task {task_name} Intervals ($\\alpha={alpha}$)", fontsize=14)
+    plt.tight_layout(rect=[0, 0, 1, 0.975])  # Leave room for suptitle
+    os.makedirs("intervals", exist_ok=True)
+    plt.savefig(os.path.join("intervals", fn))
+
+from xgboost import XGBRegressor
+
+def xgb_train(X, y):
+    model = XGBRegressor(
+        n_estimators=100,
+        learning_rate=0.1,
+        max_depth=3,
+        objective='reg:squarederror',
+        random_state=123,
+        verbosity=0
+    )
+    model.fit(X, y)
+    return model
+
+def xgb_predict(model, X):
+    return model.predict(X)
+
+def xgb_funs():
+    return {
+        'train': xgb_train,
+        'predict': xgb_predict
+    }
+
+def trial(X, y, alpha, task_name):
     (Xtrain, ytrain), (Xcal, ycal), (Xtest, ytest) = prep_data(X, y)
 
     def final_nnet_train(x, y, **kwargs):
@@ -290,10 +398,7 @@ def trial(X, y):
     def final_nnet_predict(model, X):
         return model.predict(X)
     
-    nnet_funs = {
-        'train': final_nnet_train,
-        'predict': final_nnet_predict
-    }
+    nnet_funs = xgb_funs()
     
     def train_lm(X, y):
         lm_ = LinearRegression()
@@ -311,17 +416,38 @@ def trial(X, y):
     def predict_lasso_cv(m, X):
         return m.predict(X)
     
-    lmF = {'train': train_lm, 'predict': predict_lm}
+    lmF    = {'train': train_lm, 'predict': predict_lm}
     lassoF = {'train': train_lasso_cv, 'predict': predict_lasso_cv}
-    rfF = rf_funs(ntree=400, varfrac=1)
+    rfF    = rf_funs(ntree=5, varfrac=1)
 
+    method_names = ["Linear Model", "LASSO", "Random Forest", "Neural Net"]
     funs = [lmF, lassoF, rfF, nnet_funs]
+
+    def get_conf_ensemble_cov_len(Xtrain, ytrain, Xcal, ycal, Xtest, ytest, funs):
+        cal_preds, test_preds = [], []
+        for fun in funs:
+            trained_model = fun['train'](Xtrain, ytrain)
+            cal_preds.append(fun['predict'](trained_model, Xcal))
+            test_preds.append(fun['predict'](trained_model, Xtest))
+        cal_preds  = np.stack(cal_preds)
+        test_preds = np.stack(test_preds)
+
+        cal_means, cal_stds   = np.mean(cal_preds, axis=0), np.std(cal_preds, axis=0)
+        cal_scores = np.abs(cal_means - ycal) / cal_stds
+        qhat = np.quantile(cal_scores, 1 - alpha)
+
+        test_means, test_stds = np.mean(test_preds, axis=0), np.std(test_preds, axis=0)
+        test_ints = np.stack([test_means - qhat * test_stds, test_means + qhat * test_stds]).T
+        covered   = np.logical_and(test_ints[:,0] <= ytest, ytest <= test_ints[:,1])
+        avg_len   = np.mean(test_ints[:,1] - test_ints[:,0])
+
+        return np.mean(covered), avg_len, test_ints
     
-    # apply conformal
-    alpha = 0.05
-    conf_ints1 = []
-    for f_ in funs:
-        out_ = conformal_pred_split(
+    ensemble_cov, ensemble_len, ensemble_test_ints = get_conf_ensemble_cov_len(Xtrain, ytrain, Xcal, ycal, Xtest, ytest, funs)
+
+    conf_ints1 = {}
+    for method_name, f_ in zip(method_names, funs):
+        conf_ints1[method_name] = conformal_pred_split(
             Xtrain, ytrain, 
             Xcal, ycal, 
             Xtest, ytest,
@@ -329,23 +455,22 @@ def trial(X, y):
             train_fun=f_['train'],
             predict_fun=f_['predict'],
         )
-        conf_ints1.append(out_)
     
-    test_scores = np.array([out['test_scores'] for out in conf_ints1]).T
-    test_preds = np.array([out['test_preds'] for out in conf_ints1]).T
+    test_scores = np.array([conf_ints1[method_name]['test_scores'] for method_name in conf_ints1]).T
+    test_preds  = np.array([conf_ints1[method_name]['test_preds']  for method_name in conf_ints1]).T
 
-    stacked_scores = np.array([conf_int['scores'] for conf_int in conf_ints1]).T
+    stacked_scores = np.array([conf_ints1[method_name]['scores'] for method_name in conf_ints1]).T
     _, k = stacked_scores.shape
     proj_dirs = get_mvcp_dirs(k, M=1_000)
     
     # no_recal_mvcp_quantile is just used to demonstrate recalibration is necessary for coverage
     no_recal_mvcp_quantile, mvcp_quantile = get_mvcp_quantile(stacked_scores, proj_dirs, alpha)
-    no_recal_mvcp_lens, no_recal_mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, no_recal_mvcp_quantile, test_scores, test_preds)
-    mvcp_lens, mvcp_coverage = compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
+    no_recal_mvcp_lens, no_recal_mvcp_coverage, _, _ = compute_mvcp_coverage_len(proj_dirs, no_recal_mvcp_quantile, test_scores, test_preds)
+    mvcp_lens, mvcp_coverage, candidate_ys, scores_in_regions = compute_mvcp_coverage_len(proj_dirs, mvcp_quantile, test_scores, test_preds)
 
     coverage_bools = []
-    for c_ in conf_ints1:
-        coverage_each = ((c_['lo'] <= ytest) & (ytest <= c_['up'])).astype(float)
+    for method_name in conf_ints1:
+        coverage_each = ((conf_ints1[method_name]['lo'] <= ytest) & (ytest <= conf_ints1[method_name]['up'])).astype(float)
         coverage_bools.append(coverage_each)
     
     coverage_bools = np.column_stack(coverage_bools)
@@ -370,8 +495,10 @@ def trial(X, y):
     
     # Length of each method's intervals
     avg_lengths = []
-    for c_ in conf_ints1:
-        lengths_ = c_['up'] - c_['lo']
+    viz_intervals = {}
+    for method_name in conf_ints1:
+        lengths_ = conf_ints1[method_name]['up'] - conf_ints1[method_name]['lo']
+        viz_intervals[method_name] = (conf_ints1[method_name]['lo'][0], conf_ints1[method_name]['up'][0])
         avg_lengths.append(lengths_.mean())
         
     res_len = np.zeros((len(ytest), 3))
@@ -379,12 +506,12 @@ def trial(X, y):
     
     # Build M: 4 intervals -> shape (4,2)
     w_ = np.full(4, 1.0/4)  # uniform weights for 4 methods
-    
+
     for i in range(len(ytest)):
         M = np.zeros((4,2))
         for j in range(4):
-            M[j,0] = conf_ints1[j]['lo'][i]
-            M[j,1] = conf_ints1[j]['up'][i]
+            M[j,0] = conf_ints1[method_names[j]]['lo'][i]
+            M[j,1] = conf_ints1[method_names[j]]['up'][i]
         
         # majority_vote with rho=0.5
         ci1 = majority_vote(M, w_, 0.5)
@@ -404,9 +531,20 @@ def trial(X, y):
         if ci3 is not None:
             res_dou[i,2] = ci3.shape[0]
             res_len[i,2] = sum(ci3[:,1] - ci3[:,0])
-    
+
+        if i == 0:
+            viz_intervals[r"\mathcal{C}^{M}"] = (ci1[0,0], ci1[0,1])
+            viz_intervals[r"\mathcal{C}^{R}"] = (ci2[0,0], ci2[0,1])
+            viz_intervals[r"\mathcal{C}^{U}"] = (ci3[0,0], ci3[0,1])
+
+    viz_intervals["Ensemble"] = ensemble_test_ints[0]
+
+    perform_interval_visualization = False
+    if perform_interval_visualization:
+        visualize_interval(candidate_ys[0], scores_in_regions[0], viz_intervals, task_name, alpha)
+        
     # combine coverage
-    coverages = np.concatenate([method_cov, coverages_rand, [no_recal_mvcp_coverage, mvcp_coverage]])
+    coverages = np.concatenate([method_cov, coverages_rand, [ensemble_cov, no_recal_mvcp_coverage, mvcp_coverage]])
     # combine lengths
     # The R code does: avg_length of each method, plus colMeans(res_len)
     method_lengths = avg_lengths  # 4 methods
@@ -415,7 +553,7 @@ def trial(X, y):
     majority_lengths = res_len.mean(axis=0)
     avg_no_recal_mvcp_length = np.mean(no_recal_mvcp_lens)
     avg_mvcp_length = np.mean(mvcp_lens)
-    lengths_combined = np.concatenate([method_lengths, majority_lengths, [avg_no_recal_mvcp_length, avg_mvcp_length]])
+    lengths_combined = np.concatenate([method_lengths, majority_lengths, [ensemble_len, avg_no_recal_mvcp_length, avg_mvcp_length]])
     
     return coverages, lengths_combined
 
@@ -423,24 +561,26 @@ def trial(X, y):
 ###############################################################################
 # Main script
 ###############################################################################
-def main(task_name, X, y):
-    np.random.seed(123)
-    num_trials = 10
+def main(task_name, X, y, alpha):
+    np.random.seed(42)
+    num_trials = 5
     trial_coverages, trial_lengths_combined = [], []
     for _ in range(num_trials):
-        coverages, lengths_combined = trial(X, y)
+        coverages, lengths_combined = trial(X, y, alpha, task_name)
         trial_coverages.append(coverages)
         trial_lengths_combined.append(lengths_combined)
     trial_coverages = np.array(trial_coverages)
     trial_lengths_combined = np.array(trial_lengths_combined)
     
     methods_name = [
-        "Linear Model", "LASSO", "Random Forest", "Neural Net",
+        "Linear Model", "LASSO", "Random Forest", 
+        "Neural Net",
         r"\mathcal{C}^{M}", 
         r"\mathcal{C}^{R}",
         r"\mathcal{C}^{U}", 
-        "DECP (Single-Stage)",
-        "DECP",
+        "Ensemble",
+        "CSA (Single-Stage)",
+        "CSA",
     ]
     
     df_table = pd.DataFrame({
@@ -455,11 +595,11 @@ def main(task_name, X, y):
 
     df_table.loc["cov"] = df_table.loc["mean_cov"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_cov"].astype(float).round(3).astype(str) + ")"
     df_table.loc["len"] = df_table.loc["mean_len"].astype(float).round(3).astype(str) + " (" + df_table.loc["std_len"].astype(float).round(3).astype(str) + ")"
-    df_table.at["len", 8] = r"\textbf{" +  df_table.at["len", 8] + "}"
+    df_table.at["len", 9] = r"\textbf{" +  df_table.at["len", 9] + "}"
 
-    latex_output = df_table.loc[["cov", "len"]].to_latex(float_format="{:.3f}".format)
+    latex_output = df_table.loc[["cov", "len"]].to_markdown()
     
-    results_dir = "results"
+    results_dir = f"results_{alpha}"
     os.makedirs(results_dir, exist_ok=True)
     with open(os.path.join(results_dir, f"{task_name}.txt"), "w") as f:
         f.write(latex_output)
@@ -467,8 +607,20 @@ def main(task_name, X, y):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task")
+    parser.add_argument("--task", type=int)
+    parser.add_argument("--alpha", type=float, default=0.05)
     args = parser.parse_args()
 
-    data = Dataset(args.task)
-    main(args.task, data.x, data.y)
+    suite_id = 353
+    benchmark_task_ids = openml.study.get_suite(suite_id).tasks
+    
+    task = openml.tasks.get_task(benchmark_task_ids[args.task])
+    dataset = task.get_dataset()
+    X, y, _, _ = dataset.get_data(
+        dataset_format="dataframe", target=dataset.default_target_attribute
+    )
+    X = X.select_dtypes(include=["number"])
+    main(args.task, X.values, y.values, args.alpha)
+
+    # data = Dataset(args.task)
+    # main(args.task, data.x, data.y, args.alpha)
