@@ -18,10 +18,6 @@ Department of Statistics, University of Michigan.
     <a href='https://arxiv.org/pdf/2405.16246'><img src='https://img.shields.io/badge/Paper-Arxiv-red'></a>
     <a href='https://openreview.net/pdf?id=sNTqqdPVSv'><img src='https://img.shields.io/badge/Paper-NeurIPS025-blue'></a>
 </div>
-<div align='center'>
-    <a href='https://github.com/antgroup/echomimic_v2/discussions/53'><img src='https://img.shields.io/badge/English-Common Problems-orange'></a>
-    <a href='https://github.com/antgroup/echomimic_v2/discussions/40'><img src='https://img.shields.io/badge/中文版-常见问题汇总-orange'></a>
-</div>
 
 ## ⚒️ Automatic Pipeline
 To run the regression experiments, run (for each task ID of interest)
