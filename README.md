@@ -1,4 +1,4 @@
-<h1 align='center'>EchoMimicV2: Towards Striking, Simplified, and Semi-Body Human Animation</h1>
+<h1 align='center'>Conformal Prediction for Ensembles: Improving Efficiency via Score-Based Aggregation</h1>
 
 <div align='center'>
     <a href='https://eochoarv.github.io/' target='_blank'>Eduardo Ochoa Rivera</a><sup>1</sup>&emsp;
