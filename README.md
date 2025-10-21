@@ -2,7 +2,7 @@
 
 <div align='center'>
     <a href='https://eochoarv.github.io/' target='_blank'>Eduardo Ochoa Rivera</a><sup>1</sup>&emsp;
-    <a href='https://yashpatel5400.github.io/' target='_blank'>Yash Patel</a>&emsp;
+    <a href='https://yashpatel5400.github.io/' target='_blank'>Yash Patel</a><sup>1</sup>&emsp;;
     <a href='https://www.ambujtewari.com/' target='_blank'>Ambuj Tewari</a><sup>2</sup>&emsp;
 </div>
 
@@ -11,8 +11,8 @@ Department of Statistics, University of Michigan.
 </div>
 
 <p align='center'>
-    <sup>1</sup>Core Contributor&emsp;
-    <sup>2</sup>Senior Investigator
+    <sup>1</sup>Equal contributions&emsp;
+    <sup>2</sup>Senior investigator
 </p>
 <div align='center'>
     <a href='https://arxiv.org/pdf/2405.16246'><img src='https://img.shields.io/badge/Paper-Arxiv-red'></a>
